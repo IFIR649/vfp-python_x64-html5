@@ -1,6 +1,0 @@
-Top = 624
-Left = 324
-Height = 27
-Width = 84
-Caption = "Opcion 1"
-Name = "Command1"

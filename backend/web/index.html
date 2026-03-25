@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dashboard VFP</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260324b">
+  <link rel="stylesheet" href="/static/styles.css?v=20260325a">
   <script defer src="/static/vendor/chart.umd.min.js"></script>
-  <script type="module" src="/static/app.js?v=20260324b"></script>
+  <script type="module" src="/static/app.js?v=20260325a"></script>
 </head>
 <body>
   <div class="page-shell">
@@ -95,7 +95,15 @@
             <h2 id="dashboardTitle">Dashboard</h2>
             <p id="dashboardDescription" class="muted">Esperando datos...</p>
           </div>
-          <div id="statusPill" class="status-pill">Cargando</div>
+          <div class="status-cluster">
+            <div class="status-inline">
+              <div id="statusPill" class="status-pill">Cargando</div>
+              <div id="statusProgress" class="status-progress" hidden aria-hidden="true">
+                <span class="status-progress-bar"></span>
+              </div>
+            </div>
+            <div id="statusMeta" class="status-meta"></div>
+          </div>
         </div>
         <div id="dashboardGrid" class="dashboard-grid"></div>
       </section>

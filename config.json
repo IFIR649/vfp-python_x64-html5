@@ -27,7 +27,10 @@
         "order": "desc"
       },
       "max_rows": 50000,
-      "force_safe_template": false
+      "force_safe_template": false,
+      "optimizer": {
+        "session_sorted_variants": 2
+      }
     },
     "defaults": {
       "analysis_mode": "categorias",
@@ -228,7 +231,7 @@
         "factory": "kpi_sum",
         "cell": "cell_2_2",
         "id": "kpi_cantidad_total",
-        "title": "Cantidad total",
+        "title": "suma toal de productos",
         "column": "CANTIDAD",
         "format": "integer",
         "accent_color": "#0891b2"

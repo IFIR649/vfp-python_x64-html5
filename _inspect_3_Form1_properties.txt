@@ -1,7 +1,0 @@
-Top = 1
-Left = 77
-Height = 650
-Width = 1057
-DoCreate = .T.
-Caption = "Form1"
-Name = "Form1"

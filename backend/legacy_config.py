@@ -45,6 +45,15 @@ BASE_CONFIG = {
             },
             "max_rows": 50000,
             "force_safe_template": False,
+            "optimizer": {
+                "enabled": True,
+                "source_cache_dir": "<temp>/vfp_dashboard_engine",
+                "source_cache_format": "parquet",
+                "session_filtered_entries": 8,
+                "session_distinct_entries": 64,
+                "session_sorted_variants": 2,
+                "suggestion_debounce_ms": 300,
+            },
         },
         "defaults": {
             "analysis_mode": "categorias",

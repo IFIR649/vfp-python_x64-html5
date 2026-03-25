@@ -3,6 +3,8 @@ const state = {
   snapshot: null,
   chartMap: new Map(),
   loading: false,
+  suggestionDebounceMs: 300,
+  dateRangeTouched: false,
 };
 
 function byId(id) {
@@ -66,11 +68,56 @@ function setStatus(text, mode = "") {
   }
 }
 
+function setStatusMeta(text = "") {
+  const node = byId("statusMeta");
+  if (node) {
+    node.textContent = text;
+  }
+}
+
+function setProgressVisible(flag) {
+  const node = byId("statusProgress");
+  if (node) {
+    node.hidden = !flag;
+  }
+}
+
+function describeSessionPerformance(snapshot) {
+  const perf = snapshot?.performance || {};
+  const parts = [];
+  if (typeof perf.source_cache_hit === "boolean") {
+    parts.push(`fuente cache ${perf.source_cache_hit ? "si" : "no"}`);
+  }
+  if (perf.accelerated_kind) {
+    parts.push(String(perf.accelerated_kind));
+  }
+  return parts.join(" · ");
+}
+
+function describeQueryPerformance(payload, totalMs, renderMs = 0) {
+  const perf = payload?.performance || {};
+  const parts = [];
+  if (Number.isFinite(Number(perf.elapsed_ms))) {
+    parts.push(`backend ${Math.round(Number(perf.elapsed_ms))} ms`);
+  }
+  if (Number.isFinite(totalMs)) {
+    parts.push(`total ${Math.round(totalMs)} ms`);
+  }
+  if (Number.isFinite(renderMs)) {
+    parts.push(`render ${Math.round(renderMs)} ms`);
+  }
+  if (typeof perf.filtered_cache_hit === "boolean") {
+    parts.push(`cache ${perf.filtered_cache_hit ? "si" : "no"}`);
+  }
+  return parts.join(" · ");
+}
+
 function setBusy(flag) {
   state.loading = flag;
   byId("applyFiltersButton").disabled = flag;
   byId("refreshButton").disabled = flag;
   byId("templateSelect").disabled = flag;
+  setProgressVisible(flag);
 }
 
 async function api(url, options = {}) {
@@ -134,8 +181,8 @@ function appendFilterRow(filter = {}) {
   const row = host.lastElementChild;
   row.querySelector(".filter-operator").value = filter.operator || "eq";
   row.querySelector(".remove-filter").addEventListener("click", () => row.remove());
-  row.querySelector(".filter-column").addEventListener("change", () => refreshFilterSuggestions(row));
-  row.querySelector(".filter-value").addEventListener("input", () => refreshFilterSuggestions(row));
+  row.querySelector(".filter-column").addEventListener("change", () => scheduleFilterSuggestions(row));
+  row.querySelector(".filter-value").addEventListener("input", () => scheduleFilterSuggestions(row));
 }
 
 function currentFilters() {
@@ -151,9 +198,35 @@ function currentFilters() {
 function currentDateRange() {
   const template = activeTemplate();
   const templateRange = template?.date_range || {};
-  const column = templateRange.column || (state.snapshot?.metadata?.date_columns || [])[0] || "";
+  const runtimeScope = state.snapshot?.dashboard?.runtime?.query_scope || {};
+  const templateColumn = templateRange.column || "";
+  const runtimeColumn = runtimeScope.date_column || "";
+  const column = templateColumn || runtimeColumn || (state.snapshot?.metadata?.date_columns || [])[0] || "";
   const start = byId("dateStart").value.trim();
   const end = byId("dateEnd").value.trim();
+
+  if (!state.dateRangeTouched) {
+    if (templateColumn && (templateRange.enabled || templateRange.start || templateRange.end)) {
+      return {
+        enabled: Boolean(templateColumn && (templateRange.enabled || templateRange.start || templateRange.end)),
+        column: templateColumn,
+        start: templateRange.start || "",
+        end: templateRange.end || "",
+      };
+    }
+    if (runtimeColumn && (runtimeScope.start || runtimeScope.end)) {
+      return {
+        enabled: true,
+        column: runtimeColumn,
+        start: runtimeScope.start || "",
+        end: runtimeScope.end || "",
+      };
+    }
+    if (!start && !end) {
+      return {};
+    }
+  }
+
   return {
     enabled: Boolean(column && (start || end)),
     column,
@@ -172,6 +245,7 @@ function updateDateHint() {
 function resetFilterUiFromTemplate() {
   const template = activeTemplate();
   const templateRange = template?.date_range || {};
+  state.dateRangeTouched = false;
   byId("dateStart").value = templateRange.start || "";
   byId("dateEnd").value = templateRange.end || "";
   byId("filterRows").innerHTML = "";
@@ -186,6 +260,7 @@ async function loadSession() {
   const metadata = state.snapshot.metadata || {};
   const dashboard = state.snapshot.dashboard || {};
   const templates = availableTemplates();
+  state.suggestionDebounceMs = Number(dashboard?.runtime?.optimizer?.suggestion_debounce_ms) || 300;
   byId("heroTitle").textContent = state.snapshot.ui?.app_title || dashboard.title || "Dashboard local";
   byId("heroSubtitle").textContent = state.snapshot.ui?.subtitle || dashboard.description || "Analitica local dentro de VFP.";
   byId("dashboardTitle").textContent = dashboard.title || "Dashboard";
@@ -206,6 +281,17 @@ async function loadSession() {
   }
   templateSelect.value = dashboard.active_template_id || templates[0]?.id || templateSelect.value;
   resetFilterUiFromTemplate();
+  setStatusMeta(describeSessionPerformance(state.snapshot));
+  if (state.snapshot?.performance) {
+    console.debug("[dashboard/session]", state.snapshot.performance);
+  }
+}
+
+function scheduleFilterSuggestions(row) {
+  if (row._suggestTimer) {
+    window.clearTimeout(row._suggestTimer);
+  }
+  row._suggestTimer = window.setTimeout(() => refreshFilterSuggestions(row), state.suggestionDebounceMs);
 }
 
 async function refreshFilterSuggestions(row) {
@@ -213,25 +299,45 @@ async function refreshFilterSuggestions(row) {
   const input = row.querySelector(".filter-value");
   const datalist = row.querySelector("datalist");
   if (!column || input.value.trim().length < 1) {
+    if (row._suggestController) {
+      row._suggestController.abort();
+      row._suggestController = null;
+    }
     datalist.innerHTML = "";
     return;
   }
+
+  if (row._suggestController) {
+    row._suggestController.abort();
+  }
+  const controller = new AbortController();
+  const requestValue = input.value.trim();
+  row._suggestController = controller;
+
   try {
     const payload = await api("/api/filter/values", {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         session_id: state.sessionId,
         template_id: activeTemplate()?.id || null,
         column,
-        search: input.value.trim(),
-        filters: currentFilters().filter((item) => item.column !== column || item.value !== input.value.trim()),
+        search: requestValue,
+        filters: currentFilters().filter((item) => item.column !== column || item.value !== requestValue),
         date_range: currentDateRange(),
       }),
     });
+    if (row._suggestController !== controller || input.value.trim() !== requestValue) {
+      return;
+    }
     datalist.innerHTML = (payload.values || [])
       .map((item) => `<option value="${escapeHtml(item)}"></option>`)
       .join("");
-  } catch {}
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      datalist.innerHTML = "";
+    }
+  }
 }
 
 function chartPalette(count) {
@@ -424,8 +530,10 @@ function renderDashboard(payload) {
 }
 
 async function loadDashboard() {
+  const startedAt = performance.now();
   setBusy(true);
   setStatus("Actualizando...", "");
+  setStatusMeta("Consultando backend...");
   try {
     const payload = await api("/api/dashboard/query", {
       method: "POST",
@@ -436,18 +544,33 @@ async function loadDashboard() {
         date_range: currentDateRange(),
       }),
     });
+    const renderStartedAt = performance.now();
     byId("selectedRows").textContent = fmtValue(payload.summary?.selected_row_count || 0, "integer");
     renderDashboard(payload);
+    const renderElapsedMs = performance.now() - renderStartedAt;
+    const totalElapsedMs = performance.now() - startedAt;
     setStatus("Listo", "ok");
+    setStatusMeta(describeQueryPerformance(payload, totalElapsedMs, renderElapsedMs));
+    if (payload?.performance) {
+      console.debug("[dashboard/query]", {
+        ...payload.performance,
+        total_elapsed_ms: Math.round(totalElapsedMs),
+        render_elapsed_ms: Math.round(renderElapsedMs),
+      });
+    }
   } catch (error) {
     byId("dashboardGrid").innerHTML = `<div class="error-state">${escapeHtml(error.message || "No se pudo cargar el dashboard.")}</div>`;
     setStatus("Error", "error");
+    setStatusMeta(error.message || "No se pudo cargar el dashboard.");
   } finally {
     setBusy(false);
   }
 }
 
 async function loadTablePage(widgetId, page) {
+  const startedAt = performance.now();
+  setProgressVisible(true);
+  setStatus("Paginando...", "");
   try {
     const payload = await api("/api/table/page", {
       method: "POST",
@@ -462,10 +585,25 @@ async function loadTablePage(widgetId, page) {
     });
     const card = document.querySelector(`[data-widget-id="${CSS.escape(widgetId)}"]`);
     if (card && payload.table) {
+      const renderStartedAt = performance.now();
       renderTable(card, payload.table);
+      const renderElapsedMs = performance.now() - renderStartedAt;
+      const totalElapsedMs = performance.now() - startedAt;
+      setStatus("Listo", "ok");
+      setStatusMeta(describeQueryPerformance(payload, totalElapsedMs, renderElapsedMs));
+      if (payload?.performance) {
+        console.debug("[dashboard/table]", {
+          ...payload.performance,
+          total_elapsed_ms: Math.round(totalElapsedMs),
+          render_elapsed_ms: Math.round(renderElapsedMs),
+        });
+      }
     }
   } catch (error) {
     setStatus(error.message || "No se pudo cambiar la pagina.", "error");
+    setStatusMeta(error.message || "No se pudo cambiar la pagina.");
+  } finally {
+    setProgressVisible(false);
   }
 }
 
@@ -474,11 +612,18 @@ function bindEvents() {
   byId("refreshButton").addEventListener("click", () => loadDashboard());
   byId("clearFiltersButton").addEventListener("click", () => {
     byId("filterRows").innerHTML = "";
+    state.dateRangeTouched = true;
     byId("dateStart").value = "";
     byId("dateEnd").value = "";
     loadDashboard();
   });
   byId("addFilterButton").addEventListener("click", () => appendFilterRow());
+  byId("dateStart").addEventListener("input", () => {
+    state.dateRangeTouched = true;
+  });
+  byId("dateEnd").addEventListener("input", () => {
+    state.dateRangeTouched = true;
+  });
   byId("templateSelect").addEventListener("change", () => {
     resetFilterUiFromTemplate();
     loadDashboard();
