@@ -59,6 +59,25 @@ function fmtValue(value, mode = "number") {
   return String(value);
 }
 
+let _timingToastTimer = null;
+
+function showTimingToast(lines, label = "") {
+  const toast = byId("timingToast");
+  if (!toast) return;
+  if (_timingToastTimer) window.clearTimeout(_timingToastTimer);
+  const labelHtml = label ? `<div class="timing-toast-label">${escapeHtml(label)}</div>` : "";
+  const rows = lines.map(([k, v]) =>
+    `<tr><td>${escapeHtml(k)}</td><td class="timing-val">${escapeHtml(String(v))}</td></tr>`
+  ).join("");
+  toast.innerHTML = `<button class="timing-close" onclick="this.parentElement.hidden=true">×</button>${labelHtml}<table>${rows}</table>`;
+  toast.hidden = false;
+  toast.classList.remove("timing-fade-out");
+  _timingToastTimer = window.setTimeout(() => {
+    toast.classList.add("timing-fade-out");
+    window.setTimeout(() => { toast.hidden = true; }, 600);
+  }, 8000);
+}
+
 function setStatus(text, mode = "") {
   const node = byId("statusPill");
   node.textContent = text;
@@ -284,6 +303,17 @@ async function loadSession() {
   setStatusMeta(describeSessionPerformance(state.snapshot));
   if (state.snapshot?.performance) {
     console.debug("[dashboard/session]", state.snapshot.performance);
+    const ot = state.snapshot.performance.open_timing;
+    if (ot) {
+      showTimingToast([
+        ["Caché", ot.cache_hit ? "SI" : "NO (nueva carga)"],
+        ["Config", `${ot.config_ms} ms`],
+        ["CSV → Parquet", `${ot.accelerated_ms} ms`],
+        ["DuckDB init", `${ot.duck_ms} ms`],
+        ["Preview", `${ot.preview_ms} ms`],
+        ["Total sesión", `${ot.total_ms} ms`],
+      ], "Sesión abierta");
+    }
   }
 }
 
@@ -557,6 +587,17 @@ async function loadDashboard() {
         total_elapsed_ms: Math.round(totalElapsedMs),
         render_elapsed_ms: Math.round(renderElapsedMs),
       });
+      const ph = payload.performance.phases;
+      if (ph && !payload.performance.filtered_cache_hit) {
+        showTimingToast([
+          ["WHERE build", `${ph.where_ms} ms`],
+          ["KPIs (SQL)", `${ph.kpi_ms} ms`],
+          ["Widgets (SQL)", `${ph.widgets_ms} ms`],
+          ["Backend total", `${payload.performance.elapsed_ms} ms`],
+          ["Render JS", `${Math.round(renderElapsedMs)} ms`],
+          ["Total (red+render)", `${Math.round(totalElapsedMs)} ms`],
+        ], "Dashboard cargado");
+      }
     }
   } catch (error) {
     byId("dashboardGrid").innerHTML = `<div class="error-state">${escapeHtml(error.message || "No se pudo cargar el dashboard.")}</div>`;

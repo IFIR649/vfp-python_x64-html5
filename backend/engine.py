@@ -14,6 +14,7 @@ from datetime import date, datetime, time as clock_time
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import polars as pl
 
 from .legacy_config import (
@@ -777,21 +778,6 @@ def _open_accelerated_source(
     )
 
 
-def _frame_estimated_bytes(frame: pl.DataFrame) -> int:
-    try:
-        return int(frame.estimated_size())
-    except Exception:
-        return 0
-
-
-@dataclass
-class FrameCacheEntry:
-    frame: pl.DataFrame
-    projected_columns: tuple[str, ...]
-    estimated_bytes: int = 0
-    sorted_frames: OrderedDict[str, pl.DataFrame] = field(default_factory=OrderedDict)
-
-
 @dataclass
 class SessionState:
     session_id: str
@@ -805,9 +791,11 @@ class SessionState:
     resolver: ColumnResolver
     metadata: dict[str, Any]
     optimizer: OptimizerConfig
+    conn: duckdb.DuckDBPyConnection
+    _temp_parquet: Path | None = None
+    open_timing: dict[str, Any] = field(default_factory=dict)
     query_cache: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
     table_cache: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
-    filtered_cache: OrderedDict[str, FrameCacheEntry] = field(default_factory=OrderedDict)
     distinct_cache: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
 
     @property
@@ -837,48 +825,7 @@ class SessionState:
     def shrink_caches(self) -> None:
         self._shrink_ordered(self.query_cache, 16)
         self._shrink_ordered(self.table_cache, 32)
-        self._shrink_ordered(self.filtered_cache, self.optimizer.session_filtered_entries)
         self._shrink_ordered(self.distinct_cache, self.optimizer.session_distinct_entries)
-
-    def get_filtered_entry(self, predicate_key: str, required_columns: list[str]) -> FrameCacheEntry | None:
-        entry = self.filtered_cache.get(predicate_key)
-        if entry is None:
-            return None
-        if all(column in entry.projected_columns for column in required_columns):
-            self.filtered_cache.move_to_end(predicate_key)
-            return entry
-        return None
-
-    def put_filtered_entry(self, predicate_key: str, frame: pl.DataFrame, projected_columns: list[str]) -> FrameCacheEntry:
-        entry = FrameCacheEntry(
-            frame=frame,
-            projected_columns=tuple(projected_columns),
-            estimated_bytes=_frame_estimated_bytes(frame),
-        )
-        self.filtered_cache[predicate_key] = entry
-        self.filtered_cache.move_to_end(predicate_key)
-        self.shrink_caches()
-        return entry
-
-    def get_sorted_frame(self, predicate_key: str, sort_key: str) -> pl.DataFrame | None:
-        entry = self.filtered_cache.get(predicate_key)
-        if entry is None:
-            return None
-        sorted_frame = entry.sorted_frames.get(sort_key)
-        if sorted_frame is None:
-            return None
-        entry.sorted_frames.move_to_end(sort_key)
-        return sorted_frame
-
-    def put_sorted_frame(self, predicate_key: str, sort_key: str, frame: pl.DataFrame) -> pl.DataFrame:
-        entry = self.filtered_cache.get(predicate_key)
-        if entry is None:
-            return frame
-        entry.sorted_frames[sort_key] = frame
-        entry.sorted_frames.move_to_end(sort_key)
-        while len(entry.sorted_frames) > self.optimizer.session_sorted_variants:
-            entry.sorted_frames.popitem(last=False)
-        return frame
 
 
 class SessionStore:
@@ -887,6 +834,7 @@ class SessionStore:
         self._sessions: dict[str, SessionState] = {}
 
     def open_session(self, source_path: str, config_path: str | None = None, config_json: dict[str, Any] | None = None) -> dict[str, Any]:
+        t0 = perf_time.perf_counter()
         incoming: Any = None
         if config_json:
             incoming = config_json
@@ -901,9 +849,37 @@ class SessionStore:
             raise FileNotFoundError(f"No se encontro el archivo fuente: {resolved_path}")
 
         dashboard = build_dashboard_config(source_path, incoming)
+        t_config = perf_time.perf_counter()
+
         accelerated = _open_accelerated_source(resolved_path, csv_options, optimizer, dashboard)
-        preview_columns = _ordered_columns(accelerated.all_columns, set(accelerated.all_columns[: min(8, len(accelerated.all_columns))]))
-        preview_sample = _sample_frame(accelerated.lazy_frame.select(preview_columns), size=DISTINCT_PREVIEW_ROWS) if preview_columns else pl.DataFrame()
+        t_acc = perf_time.perf_counter()
+
+        duck_conn, temp_parquet = _create_duck_session(accelerated)
+        t_duck = perf_time.perf_counter()
+
+        preview_columns = accelerated.all_columns[: min(8, len(accelerated.all_columns))]
+        if preview_columns:
+            cols_sql = ", ".join(f'"{c}"' for c in preview_columns)
+            result = duck_conn.execute(f"SELECT {cols_sql} FROM session_data LIMIT {DISTINCT_PREVIEW_ROWS}")
+            raw_rows = result.fetchall()
+            col_data: dict[str, list[Any]] = {c: [] for c in preview_columns}
+            for row in raw_rows:
+                for col, val in zip(preview_columns, row):
+                    col_data[col].append(val)
+            preview_df = pl.DataFrame(col_data)
+        else:
+            preview_df = pl.DataFrame()
+
+        t_preview = perf_time.perf_counter()
+        open_timing = {
+            "config_ms": int((t_config - t0) * 1000),
+            "accelerated_ms": int((t_acc - t_config) * 1000),
+            "duck_ms": int((t_duck - t_acc) * 1000),
+            "preview_ms": int((t_preview - t_duck) * 1000),
+            "total_ms": int((t_preview - t0) * 1000),
+            "cache_hit": accelerated.cache_hit,
+        }
+
         metadata = {
             "source_name": resolved_path.name,
             "source_path": str(resolved_path),
@@ -913,7 +889,7 @@ class SessionStore:
             "numeric_columns": accelerated.numeric_columns,
             "date_columns": accelerated.date_columns,
             "column_types": accelerated.column_types,
-            "distinct_values": _distinct_preview(preview_sample, accelerated.column_types),
+            "distinct_values": _distinct_preview(preview_df, accelerated.column_types),
             "runtime": dashboard.get("dashboard", {}).get("runtime", {}),
         }
 
@@ -930,6 +906,9 @@ class SessionStore:
             resolver=ColumnResolver(accelerated.all_columns),
             metadata=metadata,
             optimizer=optimizer,
+            conn=duck_conn,
+            _temp_parquet=temp_parquet,
+            open_timing=open_timing,
         )
 
         with self._lock:
@@ -960,6 +939,7 @@ class SessionStore:
                 "source_cache_hit": session.accelerated.cache_hit,
                 "source_signature": session.accelerated.source_signature,
                 "accelerated_kind": session.accelerated.accelerated_kind,
+                "open_timing": session.open_timing,
             },
         }
 
@@ -972,7 +952,19 @@ class SessionStore:
 
     def close(self, session_id: str) -> bool:
         with self._lock:
-            return self._sessions.pop(session_id, None) is not None
+            session = self._sessions.pop(session_id, None)
+        if session is None:
+            return False
+        try:
+            session.conn.close()
+        except Exception:
+            pass
+        if session._temp_parquet and session._temp_parquet.exists():
+            try:
+                session._temp_parquet.unlink()
+            except Exception:
+                pass
+        return True
 
     def count(self) -> int:
         with self._lock:
@@ -980,6 +972,56 @@ class SessionStore:
 
 
 STORE = SessionStore()
+
+
+def _create_duck_session(accelerated: AcceleratedSource) -> tuple[duckdb.DuckDBPyConnection, Path | None]:
+    import os as _os
+    threads = min(_os.cpu_count() or 2, 4)
+    conn = duckdb.connect(":memory:", config={"threads": threads, "memory_limit": "2GB"})
+    temp_parquet: Path | None = None
+    if accelerated.accelerated_kind in ("parquet_cache", "parquet_source"):
+        path_str = str(accelerated.accelerated_path).replace("\\", "/")
+        conn.execute(f"CREATE VIEW session_data AS SELECT * FROM read_parquet('{path_str}')")
+    else:
+        tmp = Path(tempfile.mktemp(suffix=".parquet", prefix="vfp_dash_"))
+        _write_parquet(accelerated.lazy_frame, tmp)
+        temp_parquet = tmp
+        path_str = str(tmp).replace("\\", "/")
+        conn.execute(f"CREATE VIEW session_data AS SELECT * FROM read_parquet('{path_str}')")
+    return conn, temp_parquet
+
+
+def _add_where_condition(where: str, params: list[Any], clause: str, *values: Any) -> tuple[str, list[Any]]:
+    new_params = list(params) + list(values)
+    return (where + f" AND {clause}" if where else f"WHERE {clause}"), new_params
+
+
+def _agg_sql(aggregation: str, field: str | None = None) -> str:
+    agg = str(aggregation or "sum").strip().lower()
+    if agg == "count":
+        return "COUNT(*)"
+    if not field:
+        raise ValueError(f"La agregacion '{aggregation}' requiere un campo numerico.")
+    q = f'TRY_CAST("{field}" AS DOUBLE)'
+    if agg == "sum":
+        return f"SUM({q})"
+    if agg == "avg":
+        return f"AVG({q})"
+    if agg == "min":
+        return f"MIN({q})"
+    if agg == "max":
+        return f"MAX({q})"
+    raise ValueError(f"Agregacion no soportada: {aggregation}")
+
+
+def _date_bucket_sql(field: str, granularity: str) -> str:
+    cast = f'TRY_CAST("{field}" AS TIMESTAMP)'
+    g = str(granularity or "day").strip().lower()
+    if g == "year":
+        return f"STRFTIME({cast}, '%Y')"
+    if g == "month":
+        return f"STRFTIME({cast}, '%Y-%m')"
+    return f"STRFTIME({cast}, '%Y-%m-%d')"
 
 
 @dataclass(frozen=True)
@@ -1100,18 +1142,6 @@ def _required_original_columns_for_distinct(context: QueryContext, column: str) 
     return _ordered_columns(context.session.accelerated.all_columns, required)
 
 
-def _projected_columns(session: SessionState, original_columns: list[str]) -> list[str]:
-    projected = list(original_columns)
-    for column in original_columns:
-        helper = session.accelerated.helper_columns["date"].get(column)
-        if helper and helper not in projected:
-            projected.append(helper)
-        helper = session.accelerated.helper_columns["number"].get(column)
-        if helper and helper not in projected:
-            projected.append(helper)
-    return projected
-
-
 def _numeric_field(session: SessionState, column: str) -> str | None:
     if column not in session.metadata["all_columns"]:
         return None
@@ -1134,8 +1164,11 @@ def _date_field(session: SessionState, column: str) -> str | None:
     return None
 
 
-def _apply_filters_to_lazy(lazy_frame: pl.LazyFrame, session: SessionState, context: QueryContext) -> pl.LazyFrame:
-    out = lazy_frame
+def _build_where_sql(session: SessionState, context: QueryContext) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    dayfirst = bool(session.csv_options.get("dayfirst", True))
+
     for item in context.effective_filters:
         column = item["column"]
         operator = item["operator"]
@@ -1143,109 +1176,78 @@ def _apply_filters_to_lazy(lazy_frame: pl.LazyFrame, session: SessionState, cont
         column_type = session.metadata["column_types"].get(column, "text")
 
         if column_type == "number":
-            numeric_field = _numeric_field(session, column)
-            if not numeric_field:
+            field = _numeric_field(session, column)
+            if not field:
                 continue
-            parsed_numbers = [_parse_number(part) for part in _as_list(value)]
-            parsed_numbers = [part for part in parsed_numbers if part is not None]
-            if not parsed_numbers:
+            nums = [_parse_number(p) for p in _as_list(value)]
+            nums = [n for n in nums if n is not None]
+            if not nums:
                 continue
-            expr = pl.col(numeric_field).cast(pl.Float64, strict=False)
-            match operator:
-                case "eq":
-                    out = out.filter(expr == parsed_numbers[0])
-                case "neq":
-                    out = out.filter(expr != parsed_numbers[0])
-                case "gt":
-                    out = out.filter(expr > parsed_numbers[0])
-                case "gte":
-                    out = out.filter(expr >= parsed_numbers[0])
-                case "lt":
-                    out = out.filter(expr < parsed_numbers[0])
-                case "lte":
-                    out = out.filter(expr <= parsed_numbers[0])
-                case "in":
-                    out = out.filter(expr.is_in(parsed_numbers))
+            cast = f'TRY_CAST("{field}" AS DOUBLE)'
+            if operator == "eq":
+                clauses.append(f"{cast} = ?"); params.append(nums[0])
+            elif operator == "neq":
+                clauses.append(f"{cast} != ?"); params.append(nums[0])
+            elif operator == "gt":
+                clauses.append(f"{cast} > ?"); params.append(nums[0])
+            elif operator == "gte":
+                clauses.append(f"{cast} >= ?"); params.append(nums[0])
+            elif operator == "lt":
+                clauses.append(f"{cast} < ?"); params.append(nums[0])
+            elif operator == "lte":
+                clauses.append(f"{cast} <= ?"); params.append(nums[0])
+            elif operator == "in":
+                clauses.append(f"{cast} IN ({','.join('?' * len(nums))})"); params.extend(nums)
+
         elif column_type == "date":
-            date_field = _date_field(session, column)
-            parsed_start = _parse_datetime_value(value, bool(session.csv_options.get("dayfirst", True)))
-            if not date_field or parsed_start is None:
+            field = _date_field(session, column)
+            parsed = _parse_datetime_value(value, dayfirst)
+            if not field or parsed is None:
                 continue
-            expr = pl.col(date_field).cast(pl.Datetime, strict=False)
-            match operator:
-                case "eq":
-                    out = out.filter(expr == pl.lit(parsed_start))
-                case "neq":
-                    out = out.filter(expr != pl.lit(parsed_start))
-                case "gt":
-                    out = out.filter(expr > pl.lit(parsed_start))
-                case "gte":
-                    out = out.filter(expr >= pl.lit(parsed_start))
-                case "lt":
-                    out = out.filter(expr < pl.lit(parsed_start))
-                case "lte":
-                    out = out.filter(expr <= pl.lit(parsed_start))
+            cast = f'TRY_CAST("{field}" AS TIMESTAMP)'
+            if operator == "eq":
+                clauses.append(f"{cast} = ?"); params.append(parsed)
+            elif operator == "neq":
+                clauses.append(f"{cast} != ?"); params.append(parsed)
+            elif operator == "gt":
+                clauses.append(f"{cast} > ?"); params.append(parsed)
+            elif operator == "gte":
+                clauses.append(f"{cast} >= ?"); params.append(parsed)
+            elif operator == "lt":
+                clauses.append(f"{cast} < ?"); params.append(parsed)
+            elif operator == "lte":
+                clauses.append(f"{cast} <= ?"); params.append(parsed)
+
         else:
-            expr = _text_expr(column)
-            text_values = [str(part).strip().lower() for part in _as_list(value) if str(part).strip()]
-            if not text_values:
+            text_expr = f"LOWER(TRIM(COALESCE(CAST(\"{column}\" AS VARCHAR), '')))"
+            text_vals = [str(p).strip().lower() for p in _as_list(value) if str(p).strip()]
+            if not text_vals:
                 continue
-            match operator:
-                case "eq":
-                    out = out.filter(expr == text_values[0])
-                case "neq":
-                    out = out.filter(expr != text_values[0])
-                case "contains":
-                    out = out.filter(expr.str.contains(text_values[0], literal=True))
-                case "in":
-                    out = out.filter(expr.is_in(text_values))
-                case _:
-                    out = out.filter(expr == text_values[0])
+            if operator == "eq":
+                clauses.append(f"{text_expr} = ?"); params.append(text_vals[0])
+            elif operator == "neq":
+                clauses.append(f"{text_expr} != ?"); params.append(text_vals[0])
+            elif operator == "contains":
+                clauses.append(f"INSTR({text_expr}, ?) > 0"); params.append(text_vals[0])
+            elif operator == "in":
+                clauses.append(f"{text_expr} IN ({','.join('?' * len(text_vals))})"); params.extend(text_vals)
+            else:
+                clauses.append(f"{text_expr} = ?"); params.append(text_vals[0])
 
     if context.effective_date_range.get("enabled") and context.effective_date_range.get("column"):
-        date_column = str(context.effective_date_range.get("column") or "").strip()
-        date_field = _date_field(session, date_column)
-        if date_field:
-            dayfirst = bool(session.csv_options.get("dayfirst", True))
+        date_col = str(context.effective_date_range["column"]).strip()
+        field = _date_field(session, date_col)
+        if field:
+            cast = f'TRY_CAST("{field}" AS TIMESTAMP)'
             start = _parse_datetime_value(context.effective_date_range.get("start"), dayfirst, end_of_day=False)
             end = _parse_datetime_value(context.effective_date_range.get("end"), dayfirst, end_of_day=True)
-            expr = pl.col(date_field).cast(pl.Datetime, strict=False)
             if start is not None:
-                out = out.filter(expr >= pl.lit(start))
+                clauses.append(f"{cast} >= ?"); params.append(start)
             if end is not None:
-                out = out.filter(expr <= pl.lit(end))
+                clauses.append(f"{cast} <= ?"); params.append(end)
 
-    return out
-
-
-def _collect_filtered_frame(session: SessionState, context: QueryContext, required_original_columns: list[str]) -> tuple[FrameCacheEntry, bool]:
-    cached = session.get_filtered_entry(context.predicate_key, required_original_columns)
-    if cached is not None:
-        return cached, True
-
-    projected = _projected_columns(session, required_original_columns)
-    lazy = _apply_filters_to_lazy(session.accelerated.lazy_frame, session, context)
-    frame = lazy.select(projected).collect(streaming=True)
-    entry = session.put_filtered_entry(context.predicate_key, frame, required_original_columns)
-    return entry, False
-
-
-def _aggregate_expr(aggregation: str, target_column: str | None = None) -> pl.Expr:
-    agg = str(aggregation or "sum").strip().lower()
-    if agg == "count":
-        return pl.len()
-    if not target_column:
-        raise ValueError("La agregacion requiere una columna numerica objetivo.")
-    expr = pl.col(target_column).cast(pl.Float64, strict=False)
-    if agg == "sum":
-        return expr.sum()
-    if agg == "avg":
-        return expr.mean()
-    if agg == "min":
-        return expr.min()
-    if agg == "max":
-        return expr.max()
-    raise ValueError(f"Agregacion no soportada: {aggregation}")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
 
 
 def _widget_error(widget: dict[str, Any], message: str) -> dict[str, Any]:
@@ -1259,10 +1261,10 @@ def _widget_error(widget: dict[str, Any], message: str) -> dict[str, Any]:
     }
 
 
-def _batch_kpi_values(session: SessionState, frame: pl.DataFrame, widgets: list[Any]) -> dict[str, Any]:
-    """Pre-compute all non-count KPI values in a single frame.select() pass."""
-    exprs: list[pl.Expr] = []
-    widget_ids: list[str] = []
+def _duck_batch_kpis(session: SessionState, widgets: list[Any], where: str, params: list[Any]) -> dict[str, Any]:
+    """Single SQL query for COUNT(*) + all non-count KPI aggregations."""
+    selects = ["COUNT(*) AS __total_count"]
+    kpi_ids: list[str] = []
     for widget in widgets:
         if not isinstance(widget, dict) or str(widget.get("type", "")).strip().lower() != "kpi":
             continue
@@ -1272,35 +1274,36 @@ def _batch_kpi_values(session: SessionState, frame: pl.DataFrame, widgets: list[
         column = session.resolver.resolve(widget.get("column"))
         if column not in session.metadata["all_columns"]:
             continue
-        numeric_field = _numeric_field(session, column)
-        if not numeric_field:
+        field = _numeric_field(session, column)
+        if not field:
             continue
-        exprs.append(_aggregate_expr(aggregation, numeric_field).alias(f"__kpi_{len(exprs)}"))
-        widget_ids.append(str(widget.get("id", "")))
-    if not exprs:
-        return {}
-    row = frame.select(exprs).row(0)
-    return {wid: _normalize_scalar(val) for wid, val in zip(widget_ids, row)}
+        selects.append(f"{_agg_sql(aggregation, field)} AS __kpi_{len(kpi_ids)}")
+        kpi_ids.append(str(widget.get("id", "")))
+
+    sql = f"SELECT {', '.join(selects)} FROM session_data {where}"
+    row = session.conn.execute(sql, params).fetchone()
+    result: dict[str, Any] = {"__total_count": int(row[0]) if row else 0}
+    for i, wid in enumerate(kpi_ids):
+        result[wid] = _normalize_scalar(row[i + 1] if row else None)
+    return result
 
 
-def _render_kpi(session: SessionState, frame: pl.DataFrame, widget: dict[str, Any], precomputed_kpis: dict[str, Any] | None = None) -> dict[str, Any]:
+def _render_kpi(session: SessionState, widget: dict[str, Any], where: str, params: list[Any], batch: dict[str, Any]) -> dict[str, Any]:
     column = session.resolver.resolve(widget.get("column"))
     if column not in session.metadata["all_columns"]:
         return _widget_error(widget, f"La columna '{widget.get('column')}' no existe en la fuente.")
-
     aggregation = str(widget.get("aggregation") or "sum").strip().lower()
     widget_id = str(widget.get("id", ""))
     if aggregation == "count":
-        value = frame.height
-    elif precomputed_kpis is not None and widget_id in precomputed_kpis:
-        value = precomputed_kpis[widget_id]
+        value = batch.get("__total_count", 0)
+    elif widget_id in batch:
+        value = batch[widget_id]
     else:
-        numeric_field = _numeric_field(session, column)
-        if not numeric_field:
+        field = _numeric_field(session, column)
+        if not field:
             return _widget_error(widget, f"La columna '{column}' no es numerica para KPI {aggregation}.")
-        result = frame.select(_aggregate_expr(aggregation, numeric_field).alias("value"))
-        value = _normalize_scalar(result.item(0, 0)) if result.height else None
-
+        row = session.conn.execute(f"SELECT {_agg_sql(aggregation, field)} FROM session_data {where}", params).fetchone()
+        value = _normalize_scalar(row[0] if row else None)
     return {
         "id": widget.get("id", ""),
         "cell_id": widget.get("cell_id", ""),
@@ -1313,7 +1316,7 @@ def _render_kpi(session: SessionState, frame: pl.DataFrame, widget: dict[str, An
     }
 
 
-def _render_chart(session: SessionState, frame: pl.DataFrame, widget: dict[str, Any]) -> dict[str, Any]:
+def _render_chart(session: SessionState, widget: dict[str, Any], where: str, params: list[Any]) -> dict[str, Any]:
     x_column = session.resolver.resolve(widget.get("x_column"))
     y_column = session.resolver.resolve(widget.get("y_column"))
     date_column = session.resolver.resolve(widget.get("date_column"))
@@ -1328,217 +1331,130 @@ def _render_chart(session: SessionState, frame: pl.DataFrame, widget: dict[str, 
         y_field = _numeric_field(session, y_column)
         if not x_field or not y_field:
             return _widget_error(widget, "La grafica scatter requiere columnas numericas validas.")
-        points = (
-            frame.lazy()
-            .select(pl.col(x_field).alias("x"), pl.col(y_field).alias("y"))
-            .drop_nulls()
-            .limit(point_limit)
-            .collect()
-            .to_dicts()
-        )
-        data_points = [{"x": _normalize_scalar(item.get("x")), "y": _normalize_scalar(item.get("y"))} for item in points]
+        w2, p2 = _add_where_condition(where, list(params),
+            f'TRY_CAST("{x_field}" AS DOUBLE) IS NOT NULL AND TRY_CAST("{y_field}" AS DOUBLE) IS NOT NULL')
+        sql = f'SELECT TRY_CAST("{x_field}" AS DOUBLE), TRY_CAST("{y_field}" AS DOUBLE) FROM session_data {w2} LIMIT ?'
+        rows = session.conn.execute(sql, p2 + [point_limit]).fetchall()
+        data_points = [{"x": _normalize_scalar(r[0]), "y": _normalize_scalar(r[1])} for r in rows]
         return {
-            "id": widget.get("id", ""),
-            "cell_id": widget.get("cell_id", ""),
-            "type": "chart",
-            "title": widget.get("title", ""),
-            "valid": True,
-            "data": {
-                "mode": mode,
-                "chart_type": "scatter",
-                "labels": [],
-                "datasets": [{"label": widget.get("title", ""), "data": data_points}],
-                "meta": {"x_column": x_column, "y_column": y_column},
-            },
+            "id": widget.get("id", ""), "cell_id": widget.get("cell_id", ""),
+            "type": "chart", "title": widget.get("title", ""), "valid": True,
+            "data": {"mode": mode, "chart_type": "scatter", "labels": [],
+                     "datasets": [{"label": widget.get("title", ""), "data": data_points}],
+                     "meta": {"x_column": x_column, "y_column": y_column}},
         }
 
     if mode == "tendencia":
         date_field = _date_field(session, date_column)
         if not date_field:
             return _widget_error(widget, "La grafica de tendencia requiere una columna de fecha valida.")
-
         granularity = str(widget.get("date_granularity") or "day").strip().lower()
-        if granularity == "year":
-            bucket_expr = pl.col(date_field).cast(pl.Datetime, strict=False).dt.strftime("%Y")
-        elif granularity == "month":
-            bucket_expr = pl.col(date_field).cast(pl.Datetime, strict=False).dt.strftime("%Y-%m")
-        else:
-            bucket_expr = pl.col(date_field).cast(pl.Datetime, strict=False).dt.strftime("%Y-%m-%d")
-
-        if aggregation == "count":
-            data_frame = (
-                frame.lazy()
-                .drop_nulls([date_field])
-                .group_by(bucket_expr.alias("label"))
-                .agg(pl.len().alias("value"))
-                .sort("label")
-                .collect()
-            )
-        else:
-            numeric_field = _numeric_field(session, y_column)
-            if not numeric_field:
+        bucket = _date_bucket_sql(date_field, granularity)
+        if aggregation != "count":
+            y_field = _numeric_field(session, y_column)
+            if not y_field:
                 return _widget_error(widget, f"La columna '{y_column}' no es numerica para agregacion {aggregation}.")
-            data_frame = (
-                frame.lazy()
-                .drop_nulls([date_field])
-                .group_by(bucket_expr.alias("label"))
-                .agg(_aggregate_expr(aggregation, numeric_field).alias("value"))
-                .sort("label")
-                .collect()
-            )
-
-        labels = data_frame["label"].to_list() if "label" in data_frame.columns else []
-        values = [_normalize_scalar(item) for item in (data_frame["value"].to_list() if "value" in data_frame.columns else [])]
+        else:
+            y_field = None
+        agg_expr = _agg_sql(aggregation, y_field)
+        w2, p2 = _add_where_condition(where, list(params), f'"{date_field}" IS NOT NULL')
+        sql = f"SELECT {bucket} AS label, {agg_expr} AS value FROM session_data {w2} GROUP BY label ORDER BY label ASC"
+        rows = session.conn.execute(sql, p2).fetchall()
+        labels = [str(r[0]) if r[0] is not None else "" for r in rows]
+        values = [_normalize_scalar(r[1]) for r in rows]
         return {
-            "id": widget.get("id", ""),
-            "cell_id": widget.get("cell_id", ""),
-            "type": "chart",
-            "title": widget.get("title", ""),
-            "valid": True,
-            "data": {
-                "mode": mode,
-                "chart_type": chart_type,
-                "labels": labels,
-                "datasets": [{"label": widget.get("title", ""), "data": values}],
-                "meta": {"date_column": date_column, "granularity": granularity, "aggregation": aggregation},
-            },
+            "id": widget.get("id", ""), "cell_id": widget.get("cell_id", ""),
+            "type": "chart", "title": widget.get("title", ""), "valid": True,
+            "data": {"mode": mode, "chart_type": chart_type, "labels": labels,
+                     "datasets": [{"label": widget.get("title", ""), "data": values}],
+                     "meta": {"date_column": date_column, "granularity": granularity, "aggregation": aggregation}},
         }
 
+    # categorias
     if x_column not in session.metadata["all_columns"]:
         return _widget_error(widget, f"La columna '{widget.get('x_column')}' no existe en la fuente.")
-
-    if aggregation == "count":
-        grouped = (
-            frame.lazy()
-            .with_columns(pl.col(x_column).cast(pl.Utf8).fill_null("(Sin valor)").str.strip_chars().alias("__label"))
-            .group_by("__label")
-            .agg(pl.len().alias("value"))
-            .sort("value", descending=True, nulls_last=True)
-            .head(top_n)
-            .collect()
-        )
-    else:
-        numeric_field = _numeric_field(session, y_column)
-        if not numeric_field:
+    if aggregation != "count":
+        y_field = _numeric_field(session, y_column)
+        if not y_field:
             return _widget_error(widget, f"La columna '{y_column}' no es numerica para agregacion {aggregation}.")
-        grouped = (
-            frame.lazy()
-            .with_columns(pl.col(x_column).cast(pl.Utf8).fill_null("(Sin valor)").str.strip_chars().alias("__label"))
-            .group_by("__label")
-            .agg(_aggregate_expr(aggregation, numeric_field).alias("value"))
-            .sort("value", descending=True, nulls_last=True)
-            .head(top_n)
-            .collect()
-        )
-
-    labels = grouped["__label"].to_list() if "__label" in grouped.columns else []
-    values = [_normalize_scalar(item) for item in (grouped["value"].to_list() if "value" in grouped.columns else [])]
+    else:
+        y_field = None
+    label_expr = f"COALESCE(TRIM(CAST(\"{x_column}\" AS VARCHAR)), '(Sin valor)')"
+    sql = f"SELECT {label_expr} AS label, {_agg_sql(aggregation, y_field)} AS value FROM session_data {where} GROUP BY label ORDER BY value DESC NULLS LAST LIMIT ?"
+    rows = session.conn.execute(sql, params + [top_n]).fetchall()
+    labels = [str(r[0]) if r[0] is not None else "(Sin valor)" for r in rows]
+    values = [_normalize_scalar(r[1]) for r in rows]
     return {
-        "id": widget.get("id", ""),
-        "cell_id": widget.get("cell_id", ""),
-        "type": "chart",
-        "title": widget.get("title", ""),
-        "valid": True,
-        "data": {
-            "mode": mode,
-            "chart_type": chart_type,
-            "labels": labels,
-            "datasets": [{"label": widget.get("title", ""), "data": values}],
-            "meta": {"x_column": x_column, "y_column": y_column, "aggregation": aggregation, "top_n": top_n},
-        },
+        "id": widget.get("id", ""), "cell_id": widget.get("cell_id", ""),
+        "type": "chart", "title": widget.get("title", ""), "valid": True,
+        "data": {"mode": mode, "chart_type": chart_type, "labels": labels,
+                 "datasets": [{"label": widget.get("title", ""), "data": values}],
+                 "meta": {"x_column": x_column, "y_column": y_column, "aggregation": aggregation, "top_n": top_n}},
     }
-
-
-def _sort_frame(session: SessionState, frame: pl.DataFrame, column: str, direction: str) -> pl.DataFrame:
-    if column not in session.metadata["all_columns"]:
-        return frame
-
-    descending = str(direction or "desc").strip().lower() != "asc"
-    column_type = session.metadata["column_types"].get(column, "text")
-    if column_type == "number":
-        numeric_field = _numeric_field(session, column)
-        if numeric_field and numeric_field in frame.columns:
-            return frame.sort(numeric_field, descending=descending, nulls_last=True)
-        return frame
-
-    if column_type == "date":
-        date_field = _date_field(session, column)
-        if date_field and date_field in frame.columns:
-            return frame.sort(date_field, descending=descending, nulls_last=True)
-        return frame
-
-    return (
-        frame.lazy()
-        .with_columns(pl.col(column).cast(pl.Utf8).fill_null("").str.strip_chars().alias("__sort_text"))
-        .sort("__sort_text", descending=descending, nulls_last=True)
-        .drop("__sort_text")
-        .collect()
-    )
 
 
 def _table_payload(
     session: SessionState,
-    predicate_key: str,
-    frame: pl.DataFrame,
     widget: dict[str, Any],
+    where: str,
+    params: list[Any],
     page: int,
     page_size: int | None = None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
 ) -> dict[str, Any]:
     columns = session.resolver.resolve_many(widget.get("columns") or [])
-    columns = [column for column in columns if column in session.metadata["all_columns"]]
+    columns = [c for c in columns if c in session.metadata["all_columns"]]
     if not columns:
         columns = session.metadata["all_columns"][: min(8, len(session.metadata["all_columns"]))]
 
     limit = _safe_int(page_size or widget.get("limit"), _safe_int(widget.get("limit"), 100, 1, 1000), 1, 1000)
     page_index = _safe_int(page, 1, 1, 999999)
+    offset = (page_index - 1) * limit
     order_column = session.resolver.resolve(sort_by or widget.get("sort_by"))
     order_dir = str(sort_dir or widget.get("sort_dir") or "desc").strip().lower() or "desc"
 
-    working = frame
-    if order_column:
-        sort_key = f"{order_column}|{order_dir}"
-        cached_sorted = session.get_sorted_frame(predicate_key, sort_key)
-        if cached_sorted is not None:
-            working = cached_sorted
-        else:
-            working = _sort_frame(session, frame, order_column, order_dir)
-            session.put_sorted_frame(predicate_key, sort_key, working)
+    order_clause = ""
+    if order_column and order_column in session.metadata["all_columns"]:
+        desc = "DESC NULLS LAST" if order_dir != "asc" else "ASC NULLS LAST"
+        col_type = session.metadata["column_types"].get(order_column, "text")
+        if col_type == "number":
+            f = _numeric_field(session, order_column)
+            if f:
+                order_clause = f'ORDER BY TRY_CAST("{f}" AS DOUBLE) {desc}'
+        elif col_type == "date":
+            f = _date_field(session, order_column)
+            if f:
+                order_clause = f'ORDER BY TRY_CAST("{f}" AS TIMESTAMP) {desc}'
+        if not order_clause:
+            order_clause = f"ORDER BY LOWER(TRIM(COALESCE(CAST(\"{order_column}\" AS VARCHAR), ''))) {desc}"
 
-    total_rows = working.height
-    offset = (page_index - 1) * limit
-    rows = working.select(columns).slice(offset, limit).to_dicts()
-    rows = [{key: _normalize_scalar(value) for key, value in row.items()} for row in rows]
+    count_row = session.conn.execute(f"SELECT COUNT(*) FROM session_data {where}", params).fetchone()
+    total_rows = int(count_row[0]) if count_row else 0
+
+    cols_sql = ", ".join(f'"{c}"' for c in columns)
+    data_sql = f"SELECT {cols_sql} FROM session_data {where} {order_clause} LIMIT ? OFFSET ?"
+    raw_rows = session.conn.execute(data_sql, params + [limit, offset]).fetchall()
+    rows = [{col: _normalize_scalar(val) for col, val in zip(columns, row)} for row in raw_rows]
     total_pages = max(1, math.ceil(total_rows / limit)) if total_rows else 1
 
     return {
-        "id": widget.get("id", ""),
-        "cell_id": widget.get("cell_id", ""),
-        "type": "table",
-        "title": widget.get("title", ""),
-        "valid": True,
-        "data": {
-            "columns": columns,
-            "rows": rows,
-            "page": page_index,
-            "page_size": limit,
-            "sort_by": order_column,
-            "sort_dir": order_dir,
-            "total_rows": total_rows,
-            "total_pages": total_pages,
-        },
+        "id": widget.get("id", ""), "cell_id": widget.get("cell_id", ""),
+        "type": "table", "title": widget.get("title", ""), "valid": True,
+        "data": {"columns": columns, "rows": rows, "page": page_index, "page_size": limit,
+                 "sort_by": order_column, "sort_dir": order_dir,
+                 "total_rows": total_rows, "total_pages": total_pages},
     }
 
 
-def _render_widget(session: SessionState, predicate_key: str, frame: pl.DataFrame, widget: dict[str, Any], precomputed_kpis: dict[str, Any] | None = None) -> dict[str, Any]:
+def _render_widget(session: SessionState, widget: dict[str, Any], where: str, params: list[Any], batch: dict[str, Any]) -> dict[str, Any]:
     widget_type = str(widget.get("type") or "").strip().lower()
     if widget_type == "kpi":
-        return _render_kpi(session, frame, widget, precomputed_kpis)
+        return _render_kpi(session, widget, where, params, batch)
     if widget_type == "chart":
-        return _render_chart(session, frame, widget)
+        return _render_chart(session, widget, where, params)
     if widget_type == "table":
-        return _table_payload(session, predicate_key, frame, widget, 1)
+        return _table_payload(session, widget, where, params, 1)
     return _widget_error(widget, f"Tipo de widget no soportado: {widget_type}")
 
 
@@ -1552,13 +1468,11 @@ def query_dashboard(
     session = STORE.get(session_id)
     context = _build_query_context(session, template_id, filters, date_range)
 
-    response_cache_key = _signature(
-        {
-            "template_id": context.template.get("id"),
-            "filters": context.effective_filters,
-            "date_range": context.effective_date_range,
-        }
-    )
+    response_cache_key = _signature({
+        "template_id": context.template.get("id"),
+        "filters": context.effective_filters,
+        "date_range": context.effective_date_range,
+    })
     cached_response = session.query_cache.get(response_cache_key)
     if cached_response is not None:
         session.query_cache.move_to_end(response_cache_key)
@@ -1568,14 +1482,14 @@ def query_dashboard(
         response["performance"]["elapsed_ms"] = int((perf_time.perf_counter() - started) * 1000)
         return response
 
-    required_columns = _required_original_columns_for_dashboard(context)
-    frame_entry, filtered_cache_hit = _collect_filtered_frame(session, context, required_columns)
+    t_where_start = perf_time.perf_counter()
+    where, params = _build_where_sql(session, context)
+    t_kpi_start = perf_time.perf_counter()
     all_widgets = [w for w in context.template.get("widgets", []) if isinstance(w, dict)]
-    precomputed_kpis = _batch_kpi_values(session, frame_entry.frame, all_widgets)
-    widgets = [
-        _render_widget(session, context.predicate_key, frame_entry.frame, widget, precomputed_kpis)
-        for widget in all_widgets
-    ]
+    batch = _duck_batch_kpis(session, all_widgets, where, params)
+    t_widgets_start = perf_time.perf_counter()
+    widgets = [_render_widget(session, widget, where, params, batch) for widget in all_widgets]
+    t_done = perf_time.perf_counter()
 
     response = {
         "ok": True,
@@ -1586,15 +1500,19 @@ def query_dashboard(
         "invalid_filters": context.invalid_filters,
         "date_range": context.effective_date_range,
         "summary": {
-            "selected_row_count": frame_entry.frame.height,
+            "selected_row_count": batch.get("__total_count", 0),
             "total_row_count": session.metadata["row_count"],
             "source_name": session.metadata["source_name"],
         },
         "widgets": widgets,
         "performance": {
-            "filtered_cache_hit": filtered_cache_hit,
-            "projected_columns": required_columns,
-            "elapsed_ms": int((perf_time.perf_counter() - started) * 1000),
+            "filtered_cache_hit": False,
+            "elapsed_ms": int((t_done - started) * 1000),
+            "phases": {
+                "where_ms": int((t_kpi_start - t_where_start) * 1000),
+                "kpi_ms": int((t_widgets_start - t_kpi_start) * 1000),
+                "widgets_ms": int((t_done - t_widgets_start) * 1000),
+            },
         },
     }
     session.query_cache[response_cache_key] = deepcopy(response)
@@ -1621,18 +1539,13 @@ def query_table_page(
     if widget is None:
         raise KeyError(f"No se encontro el widget de tabla '{widget_id}'.")
 
-    response_cache_key = _signature(
-        {
-            "widget_id": widget_id,
-            "template_id": context.template.get("id"),
-            "filters": context.effective_filters,
-            "date_range": context.effective_date_range,
-            "page": page,
-            "page_size": page_size,
-            "sort_by": sort_by,
-            "sort_dir": sort_dir,
-        }
-    )
+    response_cache_key = _signature({
+        "widget_id": widget_id,
+        "template_id": context.template.get("id"),
+        "filters": context.effective_filters,
+        "date_range": context.effective_date_range,
+        "page": page, "page_size": page_size, "sort_by": sort_by, "sort_dir": sort_dir,
+    })
     cached_response = session.table_cache.get(response_cache_key)
     if cached_response is not None:
         session.table_cache.move_to_end(response_cache_key)
@@ -1642,18 +1555,8 @@ def query_table_page(
         response["performance"]["elapsed_ms"] = int((perf_time.perf_counter() - started) * 1000)
         return response
 
-    required_columns = _required_original_columns_for_table(context, widget, sort_by=sort_by)
-    frame_entry, filtered_cache_hit = _collect_filtered_frame(session, context, required_columns)
-    table_payload = _table_payload(
-        session,
-        context.predicate_key,
-        frame_entry.frame,
-        widget,
-        page,
-        page_size=page_size,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-    )
+    where, params = _build_where_sql(session, context)
+    table_result = _table_payload(session, widget, where, params, page, page_size=page_size, sort_by=sort_by, sort_dir=sort_dir)
     response = {
         "ok": True,
         "session_id": session.session_id,
@@ -1662,10 +1565,9 @@ def query_table_page(
         "filters": context.effective_filters,
         "invalid_filters": context.invalid_filters,
         "date_range": context.effective_date_range,
-        "table": table_payload,
+        "table": table_result,
         "performance": {
-            "filtered_cache_hit": filtered_cache_hit,
-            "projected_columns": required_columns,
+            "filtered_cache_hit": False,
             "elapsed_ms": int((perf_time.perf_counter() - started) * 1000),
         },
     }
@@ -1692,14 +1594,8 @@ def filter_values(
         raise KeyError(f"La columna '{column}' no existe en la sesion.")
 
     text_search = str(search or "").strip().lower()
-    distinct_key = _signature(
-        {
-            "predicate": context.predicate_key,
-            "column": resolved_column,
-            "search": text_search,
-            "limit": _safe_int(limit, 30, 1, 100),
-        }
-    )
+    effective_limit = _safe_int(limit, 30, 1, 100)
+    distinct_key = _signature({"predicate": context.predicate_key, "column": resolved_column, "search": text_search, "limit": effective_limit})
     cached_response = session.distinct_cache.get(distinct_key)
     if cached_response is not None:
         session.distinct_cache.move_to_end(distinct_key)
@@ -1709,21 +1605,21 @@ def filter_values(
         response["performance"]["elapsed_ms"] = int((perf_time.perf_counter() - started) * 1000)
         return response
 
-    required_columns = _required_original_columns_for_distinct(context, resolved_column)
-    frame_entry, filtered_cache_hit = _collect_filtered_frame(session, context, required_columns)
-    working = frame_entry.frame.lazy().select(pl.col(resolved_column).cast(pl.Utf8).fill_null("").str.strip_chars().alias("value"))
+    where, params = _build_where_sql(session, context)
+    val_expr = f"LOWER(TRIM(COALESCE(CAST(\"{resolved_column}\" AS VARCHAR), '')))"
     if text_search:
-        working = working.filter(pl.col("value").str.to_lowercase().str.contains(text_search, literal=True))
+        where, params = _add_where_condition(where, params, f"INSTR({val_expr}, ?) > 0", text_search)
+    where, params = _add_where_condition(where, params, f"TRIM(COALESCE(CAST(\"{resolved_column}\" AS VARCHAR), '')) != ''")
+    sql = f"SELECT DISTINCT TRIM(COALESCE(CAST(\"{resolved_column}\" AS VARCHAR), '')) AS value FROM session_data {where} ORDER BY value LIMIT ?"
+    rows = session.conn.execute(sql, params + [effective_limit]).fetchall()
+    values = [str(r[0]) for r in rows if r[0]]
 
-    data = working.filter(pl.col("value") != "").unique().sort("value").limit(_safe_int(limit, 30, 1, 100)).collect()
-    values = [str(value) for value in data["value"].to_list()] if "value" in data.columns else []
     response = {
         "ok": True,
         "column": resolved_column,
         "values": values,
         "performance": {
-            "filtered_cache_hit": filtered_cache_hit,
-            "projected_columns": required_columns,
+            "filtered_cache_hit": False,
             "elapsed_ms": int((perf_time.perf_counter() - started) * 1000),
         },
     }

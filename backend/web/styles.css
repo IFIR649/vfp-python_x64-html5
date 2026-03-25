@@ -500,3 +500,78 @@ th {
     flex-direction: column;
   }
 }
+
+/* ── Timing toast ─────────────────────────────────────────── */
+.timing-toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 9999;
+  min-width: 240px;
+  max-width: 340px;
+  background: rgba(23, 32, 51, 0.92);
+  color: #e8eaf0;
+  border-radius: 14px;
+  padding: 14px 16px 12px;
+  font-size: 12px;
+  font-family: "Segoe UI Variable Text", "Aptos", monospace, sans-serif;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.38);
+  animation: toast-in 0.25s ease;
+  backdrop-filter: blur(8px);
+}
+
+.timing-toast.timing-fade-out {
+  animation: toast-out 0.5s ease forwards;
+}
+
+.timing-toast-label {
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94d1d5;
+  margin-bottom: 8px;
+}
+
+.timing-toast table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.timing-toast td {
+  padding: 2px 0;
+}
+
+.timing-toast td.timing-val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #a5f3c4;
+  padding-left: 12px;
+}
+
+.timing-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.timing-close:hover {
+  color: #e8eaf0;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(8px); }
+}
