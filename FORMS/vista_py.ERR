@@ -1,0 +1,6 @@
+PROCEDURE Init SET PROCEDURE TO vfp_dashboard_bridge ADDITIVE =DashboardBridgeInitForm(This, FULLPATH("config.json")) ENDPROC PROCEDURE Activate SET PROCEDURE TO vfp_dashboard_bridge ADDITIVE =DashboardBridgeActivateForm(This) ENDPROC PROCEDURE Resize SET PROCEDURE TO vfp_dashboard_bridge ADDITIVE =DashboardBridgeResize(This) ENDPROC PROCEDURE Destroy SET PROCEDURE TO vfp_dashboard_bridge ADDITIVE =DashboardBridgeDestroyForm(This) ENDPROC
+Error in line 1 of Form1.Init (record 3): Command contains unrecognized phrase/keyword.
+PROCEDURE Click SET PROCEDURE TO vfp_dashboard_bridge ADDITIVE =DashboardBridgeOpen(Thisform) ENDPROC
+Error in line 1 of Form1.Command1.Click (record 5): Command contains unrecognized phrase/keyword.
+PROCEDURE Click SET PROCEDURE TO vfp_dashboard_bridge ADDITIVE =DashboardBridgeOpen(Thisform) ENDPROC
+Error in line 1 of Form1.Command2.Click (record 7): Command contains unrecognized phrase/keyword.

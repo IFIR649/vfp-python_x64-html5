@@ -1,0 +1,95 @@
+PROCEDURE Click
+LOCAL lcRaizAbsoluta, lcPythonPrg, lcPythonBase, lcPythonDll
+LOCAL loSys, loPath, lcRutaCsv, lcConfigJson, lcRutaHtml
+LOCAL loArgs, llResultado, oErr
+LOCAL ARRAY laDirs[1]
+LOCAL lnDirs, i, lcProbe
+
+WAIT WINDOW "Procesando dashboard CSV modular... Espere un momento." NOWAIT
+
+* === 1. Detectar raiz del proyecto ===
+lcRaizAbsoluta = STRTRAN(ADDBS(SYS(5) + SYS(2003)), "\\", "\")
+
+IF !FILE(lcRaizAbsoluta + "VFP-Embedded-Python-master\python.prg")
+    IF DIRECTORY(lcRaizAbsoluta + "python_integracion")
+        lcRaizAbsoluta = ADDBS(lcRaizAbsoluta + "python_integracion")
+    ENDIF
+ENDIF
+
+IF !FILE(lcRaizAbsoluta + "VFP-Embedded-Python-master\python.prg")
+    lnDirs = ADIR(laDirs, lcRaizAbsoluta + "*", "D")
+    FOR i = 1 TO lnDirs
+        IF INLIST(ALLTRIM(laDirs[i,1]), ".", "..")
+            LOOP
+        ENDIF
+
+        lcProbe = ADDBS(lcRaizAbsoluta + ALLTRIM(laDirs[i,1]))
+        IF FILE(lcProbe + "VFP-Embedded-Python-master\python.prg") AND ;
+           FILE(lcProbe + "python310_embed\python310.dll") AND ;
+           FILE(lcProbe + "main.py")
+            lcRaizAbsoluta = lcProbe
+            EXIT
+        ENDIF
+    ENDFOR
+ENDIF
+
+* === 2. Cargar puente ===
+lcPythonPrg = lcRaizAbsoluta + "VFP-Embedded-Python-master\python.prg"
+
+IF !FILE(lcPythonPrg)
+    WAIT CLEAR
+    MESSAGEBOX("No se encuentra el puente en:" + CHR(13) + lcPythonPrg, 16, "Error")
+    RETURN
+ENDIF
+
+SET PROCEDURE TO (lcPythonPrg) ADDITIVE
+
+* === 3. Iniciar Python embebido ===
+lcPythonBase = lcRaizAbsoluta + "python310_embed\"
+lcPythonDll  = lcPythonBase + "python310.dll"
+
+IF !FILE(lcPythonDll)
+    WAIT CLEAR
+    MESSAGEBOX("Falta el runtime embebido de Python en:" + CHR(13) + lcPythonBase, 16, "Error")
+    RETURN
+ENDIF
+
+start_python(lcPythonBase, lcPythonDll)
+
+* === 4. Agregar la raiz del proyecto a sys.path ===
+loSys = CREATEOBJECT("PythonModule", "sys")
+loPath = loSys.GetAttrRetObj("path")
+loPath.CallMethod("append", CREATEOBJECT("PythonTuple", lcRaizAbsoluta), .NULL.)
+
+* === 5. Parametros para el dashboard modular ===
+lcRutaCsv    = "csv\ventas.csv"
+*lcRutaCsv    = "csv/1773428117039-F2PLTd-VENTASPRODUCTOS.csv"
+** false: carga desde los bloques de py / true: carga desde el config.json
+lcConfigJson = '{"dashboard_modular":{"enabled":true}}'
+lcRutaHtml   = ADDBS(SYS(2023)) + "dashboard_csv_builder.html"
+
+*!*	lcRutaCsv    = "csv/1773428117039-F2PLTd-VENTASPRODUCTOS.csv"
+*!*	lcConfigJson = "config-copy.json"
+*!*	lcRutaHtml   = ADDBS(SYS(2023)) + "dashboard_csv_builder.html"
+
+
+
+* === 6. Llamar a main.py ===
+TRY
+    loArgs = CREATEOBJECT("PythonTuple", lcRutaCsv, lcConfigJson, lcRutaHtml)
+    llResultado = PythonFunctionCall("main", "generar_dashboard_csv", loArgs)
+
+    WAIT CLEAR
+
+    IF VARTYPE(llResultado) = "L" AND llResultado = .T.
+        thisform.oleBrowser.Navigate("file:///" + STRTRAN(lcRutaHtml, "\", "/"))
+    ELSE
+        MESSAGEBOX("No se pudo generar el dashboard CSV modular.", 16, "Error")
+    ENDIF
+
+CATCH TO oErr
+    WAIT CLEAR
+    MESSAGEBOX("Error en FoxPro al llamar main.py:" + CHR(13) + oErr.Message, 16, "Error")
+ENDTRY
+
+ENDPROC

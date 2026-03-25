@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "dgSpecHash": "qcRXZsH/rBk=",
+  "success": true,
+  "projectFilePath": "C:\\sistemas\\python_integracion_bloques\\dotnet\\bridge\\VfpWebViewBridge.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\PROGRAMADOR01\\.nuget\\packages\\microsoft.web.webview2\\1.0.3856.49\\microsoft.web.webview2.1.0.3856.49.nupkg.sha512",
+    "C:\\Users\\PROGRAMADOR01\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.25\\microsoft.netcore.app.ref.8.0.25.nupkg.sha512",
+    "C:\\Users\\PROGRAMADOR01\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.25\\microsoft.windowsdesktop.app.ref.8.0.25.nupkg.sha512",
+    "C:\\Users\\PROGRAMADOR01\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.25\\microsoft.aspnetcore.app.ref.8.0.25.nupkg.sha512",
+    "C:\\Users\\PROGRAMADOR01\\.nuget\\packages\\microsoft.netcore.app.host.win-x86\\8.0.25\\microsoft.netcore.app.host.win-x86.8.0.25.nupkg.sha512"
+  ],
+  "logs": []
+}

@@ -1,0 +1,494 @@
+FUNCTION DashboardBridgeInitForm
+    LPARAMETERS toForm, tcProjectPath
+
+    LOCAL lcProjectDir
+
+    lcProjectDir = JUSTPATH(FULLPATH(tcProjectPath))
+    IF EMPTY(lcProjectDir)
+        lcProjectDir = ADDBS(SYS(5) + SYS(2003))
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cProjectDir", 5)
+        toForm.AddProperty("cProjectDir", lcProjectDir)
+    ELSE
+        toForm.cProjectDir = lcProjectDir
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cBaseUrl", 5)
+        toForm.AddProperty("cBaseUrl", "http://127.0.0.1:8766")
+    ELSE
+        toForm.cBaseUrl = "http://127.0.0.1:8766"
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cWebViewProgId", 5)
+        toForm.AddProperty("cWebViewProgId", "VfpWebViewBridge.Host")
+    ELSE
+        toForm.cWebViewProgId = "VfpWebViewBridge.Host"
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cBackendBat", 5)
+        toForm.AddProperty("cBackendBat", ADDBS(lcProjectDir) + "scripts\start_backend.bat")
+    ELSE
+        toForm.cBackendBat = ADDBS(lcProjectDir) + "scripts\start_backend.bat"
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cRegisterBridgePs1", 5)
+        toForm.AddProperty("cRegisterBridgePs1", ADDBS(lcProjectDir) + "scripts\register_vfp_webview_bridge.ps1")
+    ELSE
+        toForm.cRegisterBridgePs1 = ADDBS(lcProjectDir) + "scripts\register_vfp_webview_bridge.ps1"
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cSourcePath", 5)
+        toForm.AddProperty("cSourcePath", "csv\1773428117039-F2PLTd-VENTASPRODUCTOS.csv")
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cConfigPath", 5)
+        toForm.AddProperty("cConfigPath", "config.json")
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cConfigJson", 5)
+        toForm.AddProperty("cConfigJson", "")
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cSessionId", 5)
+        toForm.AddProperty("cSessionId", "")
+    ELSE
+        toForm.cSessionId = ""
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "oWebViewHost", 5)
+        toForm.AddProperty("oWebViewHost", .NULL.)
+    ELSE
+        toForm.oWebViewHost = .NULL.
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "lWebViewAttached", 5)
+        toForm.AddProperty("lWebViewAttached", .F.)
+    ELSE
+        toForm.lWebViewAttached = .F.
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "lAutoOpenPending", 5)
+        toForm.AddProperty("lAutoOpenPending", .T.)
+    ELSE
+        toForm.lAutoOpenPending = .T.
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "lblBridgeStatus", 5)
+        toForm.AddObject("lblBridgeStatus", "Label")
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cntBrowserHost", 5)
+        toForm.AddObject("cntBrowserHost", "Container")
+    ENDIF
+
+    toForm.Caption = "Dashboard Moderno VFP"
+    toForm.ScaleMode = 3
+
+    WITH toForm.Command1
+        .Caption = "Recargar"
+        .Visible = .T.
+    ENDWITH
+
+    WITH toForm.Command2
+        .Caption = "Reabrir"
+        .Visible = .T.
+    ENDWITH
+
+    WITH toForm.lblBridgeStatus
+        .Caption = "Inicializando..."
+        .Visible = .T.
+        .FontBold = .T.
+        .AutoSize = .T.
+    ENDWITH
+
+    WITH toForm.cntBrowserHost
+        .Visible = .T.
+        .BackColor = RGB(255, 255, 255)
+        .BorderWidth = 1
+        .SpecialEffect = 1
+    ENDWITH
+
+    IF PEMSTATUS(toForm, "oleBrowser", 5)
+        toForm.oleBrowser.Visible = .F.
+    ENDIF
+
+    =DashboardBridgeResize(toForm)
+    =DashboardBridgeSetStatus(toForm, "Formulario listo")
+    RETURN .T.
+ENDFUNC
+
+FUNCTION DashboardBridgeActivateForm
+    LPARAMETERS toForm
+
+    IF VARTYPE(toForm) # "O"
+        RETURN .F.
+    ENDIF
+
+    IF PEMSTATUS(toForm, "lAutoOpenPending", 5) AND toForm.lAutoOpenPending
+        toForm.lAutoOpenPending = .F.
+        RETURN DashboardBridgeOpen(toForm)
+    ENDIF
+
+    RETURN .T.
+ENDFUNC
+
+FUNCTION DashboardBridgeOpen
+    LPARAMETERS toForm
+
+    LOCAL lcResponse, lnStatus, llOk, lcSessionId, lcUrl
+
+    IF VARTYPE(toForm) # "O"
+        RETURN .F.
+    ENDIF
+
+    =DashboardBridgeSetStatus(toForm, "Preparando backend...")
+    IF !BackendAlive(toForm.cBaseUrl)
+        =StartBackend(toForm.cBackendBat)
+        IF !WaitForBackend(toForm.cBaseUrl, 12)
+            =DashboardBridgeSetStatus(toForm, "Backend sin respuesta")
+            MESSAGEBOX("El backend local no respondio.", 16, "Dashboard")
+            RETURN .F.
+        ENDIF
+    ENDIF
+
+    IF !EMPTY(toForm.cSessionId)
+        =CloseSession(toForm.cBaseUrl, toForm.cSessionId)
+        toForm.cSessionId = ""
+    ENDIF
+
+    llOk = OpenSessionRequest(toForm, @lnStatus, @lcResponse)
+    IF !llOk
+        =DashboardBridgeSetStatus(toForm, "No se pudo abrir la sesion")
+        MESSAGEBOX("No se pudo abrir la sesion del dashboard." + CHR(13) + CHR(10) + lcResponse, 16, "Dashboard")
+        RETURN .F.
+    ENDIF
+
+    lcSessionId = ExtractJsonString(lcResponse, "session_id")
+    IF EMPTY(lcSessionId)
+        =DashboardBridgeSetStatus(toForm, "Respuesta invalida")
+        MESSAGEBOX("La API no devolvio session_id." + CHR(13) + CHR(10) + lcResponse, 16, "Dashboard")
+        RETURN .F.
+    ENDIF
+
+    toForm.cSessionId = lcSessionId
+    lcUrl = NormalizeBaseUrl(toForm.cBaseUrl) + "/app?session_id=" + lcSessionId
+
+    IF !AttachOrNavigateWebView(toForm, lcUrl)
+        RETURN .F.
+    ENDIF
+
+    =DashboardBridgeSetStatus(toForm, "Dashboard cargado")
+    RETURN .T.
+ENDFUNC
+
+FUNCTION DashboardBridgeResize
+    LPARAMETERS toForm
+
+    LOCAL lnPad, lnButtonTop, lnBrowserTop, lnBrowserHeight, lnBrowserWidth
+
+    lnPad = 12
+    lnBrowserTop = 12
+    lnButtonTop = MAX(lnBrowserTop + 120, toForm.Height - 42)
+    lnBrowserHeight = MAX(120, lnButtonTop - lnBrowserTop - 10)
+    lnBrowserWidth = MAX(120, toForm.Width - (lnPad * 2))
+
+    IF PEMSTATUS(toForm, "cntBrowserHost", 5)
+        toForm.cntBrowserHost.Move(lnPad, lnBrowserTop, lnBrowserWidth, lnBrowserHeight)
+    ENDIF
+
+    IF PEMSTATUS(toForm, "oleBrowser", 5)
+        toForm.oleBrowser.Visible = .F.
+    ENDIF
+
+    IF PEMSTATUS(toForm, "lblBridgeStatus", 5)
+        toForm.lblBridgeStatus.Move(lnPad, MAX(4, toForm.Height - 62))
+    ENDIF
+
+    IF PEMSTATUS(toForm, "Command1", 5)
+        toForm.Command1.Move(MAX(lnPad, toForm.Width - 204), MAX(lnPad, toForm.Height - 40), 90, 28)
+    ENDIF
+
+    IF PEMSTATUS(toForm, "Command2", 5)
+        toForm.Command2.Move(MAX(lnPad, toForm.Width - 106), MAX(lnPad, toForm.Height - 40), 90, 28)
+    ENDIF
+
+    IF VARTYPE(toForm.oWebViewHost) = "O" AND toForm.lWebViewAttached
+        =ResizeEmbeddedWebView(toForm)
+    ENDIF
+
+    RETURN .T.
+ENDFUNC
+
+FUNCTION DashboardBridgeDestroyForm
+    LPARAMETERS toForm
+
+    IF VARTYPE(toForm) # "O"
+        RETURN .T.
+    ENDIF
+
+    IF !EMPTY(toForm.cSessionId)
+        =CloseSession(toForm.cBaseUrl, toForm.cSessionId)
+        toForm.cSessionId = ""
+    ENDIF
+
+    IF VARTYPE(toForm.oWebViewHost) = "O"
+        TRY
+            toForm.oWebViewHost.Destroy()
+        CATCH
+        ENDTRY
+    ENDIF
+
+    toForm.oWebViewHost = .NULL.
+    toForm.lWebViewAttached = .F.
+    RETURN .T.
+ENDFUNC
+
+FUNCTION DashboardBridgeSetStatus
+    LPARAMETERS toForm, tcText
+
+    IF VARTYPE(toForm) = "O" AND PEMSTATUS(toForm, "lblBridgeStatus", 5)
+        toForm.lblBridgeStatus.Caption = TRANSFORM(tcText)
+    ENDIF
+
+    RETURN .T.
+ENDFUNC
+
+FUNCTION AttachOrNavigateWebView
+    LPARAMETERS toForm, tcUrl
+
+    LOCAL llOk, lcError
+
+    llOk = .F.
+    lcError = ""
+    IF VARTYPE(toForm.oWebViewHost) # "O"
+        TRY
+            toForm.oWebViewHost = CREATEOBJECT(toForm.cWebViewProgId)
+        CATCH TO loEx
+            lcError = loEx.Message
+        ENDTRY
+        IF VARTYPE(toForm.oWebViewHost) # "O"
+            IF EMPTY(lcError)
+                lcError = "No se pudo crear el bridge COM."
+            ENDIF
+            MESSAGEBOX("No se pudo crear el bridge COM." + CHR(13) + CHR(10) + lcError + CHR(13) + CHR(10) + ;
+                "Registra el bridge con:" + CHR(13) + CHR(10) + toForm.cRegisterBridgePs1, 16, "Dashboard")
+            RETURN .F.
+        ENDIF
+    ENDIF
+
+    TRY
+        IF !toForm.lWebViewAttached
+            llOk = toForm.oWebViewHost.Attach(toForm.HWnd, toForm.cntBrowserHost.Left, toForm.cntBrowserHost.Top, toForm.cntBrowserHost.Width, toForm.cntBrowserHost.Height, tcUrl)
+            toForm.lWebViewAttached = llOk
+        ELSE
+            llOk = toForm.oWebViewHost.Navigate(tcUrl)
+            =ResizeEmbeddedWebView(toForm)
+        ENDIF
+    CATCH TO loEx
+        lcError = loEx.Message
+        llOk = .F.
+    ENDTRY
+
+    IF !llOk
+        IF EMPTY(lcError)
+            lcError = GetHostLastError(toForm.oWebViewHost)
+        ENDIF
+        =DashboardBridgeSetStatus(toForm, "Fallo WebView2")
+        MESSAGEBOX("No se pudo cargar la UI embebida." + CHR(13) + CHR(10) + lcError, 16, "Dashboard")
+        RETURN .F.
+    ENDIF
+
+    RETURN .T.
+ENDFUNC
+
+FUNCTION ResizeEmbeddedWebView
+    LPARAMETERS toForm
+
+    LOCAL llOk
+
+    llOk = .F.
+    IF VARTYPE(toForm) # "O" OR VARTYPE(toForm.oWebViewHost) # "O"
+        RETURN .F.
+    ENDIF
+
+    IF !PEMSTATUS(toForm, "cntBrowserHost", 5)
+        RETURN .F.
+    ENDIF
+
+    TRY
+        llOk = toForm.oWebViewHost.Resize(toForm.cntBrowserHost.Left, toForm.cntBrowserHost.Top, toForm.cntBrowserHost.Width, toForm.cntBrowserHost.Height)
+    CATCH
+        llOk = .F.
+    ENDTRY
+
+    RETURN llOk
+ENDFUNC
+
+FUNCTION OpenSessionRequest
+    LPARAMETERS toForm, lnStatus, lcResponse
+
+    LOCAL lcJson
+
+    lcJson = '{"source_path":"' + JsonEscape(toForm.cSourcePath) + '"'
+    IF !EMPTY(ALLTRIM(toForm.cConfigJson))
+        lcJson = lcJson + ',"config_json":' + toForm.cConfigJson
+    ELSE
+        lcJson = lcJson + ',"config_path":"' + JsonEscape(toForm.cConfigPath) + '"'
+    ENDIF
+    lcJson = lcJson + "}"
+
+    RETURN HttpJsonRequest("POST", NormalizeBaseUrl(toForm.cBaseUrl) + "/api/session/open", lcJson, @lnStatus, @lcResponse)
+ENDFUNC
+
+FUNCTION CloseSession
+    LPARAMETERS tcBaseUrl, tcSessionId
+
+    LOCAL lnStatus, lcResponse
+
+    RETURN HttpJsonRequest("DELETE", NormalizeBaseUrl(tcBaseUrl) + "/api/session/" + tcSessionId, "", @lnStatus, @lcResponse)
+ENDFUNC
+
+FUNCTION BackendAlive
+    LPARAMETERS tcBaseUrl
+
+    LOCAL lnStatus, lcResponse
+
+    RETURN HttpJsonRequest("GET", NormalizeBaseUrl(tcBaseUrl) + "/health", "", @lnStatus, @lcResponse)
+ENDFUNC
+
+FUNCTION StartBackend
+    LPARAMETERS tcBatchPath
+
+    LOCAL loShell, llOk
+
+    IF !FILE(tcBatchPath)
+        RETURN .F.
+    ENDIF
+
+    llOk = .F.
+    TRY
+        loShell = CREATEOBJECT("WScript.Shell")
+        loShell.Run("cmd.exe /c " + QuotePath(tcBatchPath), 0, .F.)
+        llOk = .T.
+    CATCH
+        llOk = .F.
+    ENDTRY
+
+    RETURN llOk
+ENDFUNC
+
+FUNCTION WaitForBackend
+    LPARAMETERS tcBaseUrl, tnSeconds
+
+    LOCAL lnTry
+
+    FOR lnTry = 1 TO MAX(1, tnSeconds)
+        IF BackendAlive(tcBaseUrl)
+            RETURN .T.
+        ENDIF
+        DOEVENTS
+        =INKEY(1)
+    ENDFOR
+
+    RETURN .F.
+ENDFUNC
+
+FUNCTION HttpJsonRequest
+    LPARAMETERS tcMethod, tcUrl, tcBody, lnStatus, lcResponse
+
+    LOCAL loHttp, llOk
+
+    lnStatus = 0
+    lcResponse = ""
+    llOk = .F.
+
+    TRY
+        loHttp = CREATEOBJECT("MSXML2.ServerXMLHTTP.6.0")
+        loHttp.setTimeouts(2000, 2000, 8000, 8000)
+        loHttp.Open(tcMethod, tcUrl, .F.)
+        loHttp.setRequestHeader("Accept", "application/json")
+        IF VARTYPE(tcBody) = "C" AND !EMPTY(tcBody)
+            loHttp.setRequestHeader("Content-Type", "application/json")
+            loHttp.Send(tcBody)
+        ELSE
+            loHttp.Send()
+        ENDIF
+        lnStatus = loHttp.Status
+        lcResponse = loHttp.responseText
+        llOk = BETWEEN(lnStatus, 200, 299)
+    CATCH TO loEx
+        lcResponse = loEx.Message
+        llOk = .F.
+    ENDTRY
+
+    RETURN llOk
+ENDFUNC
+
+FUNCTION ExtractJsonString
+    LPARAMETERS tcJson, tcKey
+
+    LOCAL lcNeedle, lnStart, lnValue, lcTail, lnEnd
+
+    lcNeedle = '"' + tcKey + '":"'
+    lnStart = ATC(lcNeedle, tcJson)
+    IF lnStart <= 0
+        RETURN ""
+    ENDIF
+
+    lnValue = lnStart + LEN(lcNeedle)
+    lcTail = SUBSTR(tcJson, lnValue)
+    lnEnd = AT(CHR(34), lcTail)
+    IF lnEnd <= 0
+        RETURN ""
+    ENDIF
+
+    RETURN LEFT(lcTail, lnEnd - 1)
+ENDFUNC
+
+FUNCTION GetHostLastError
+    LPARAMETERS toHost
+
+    LOCAL lcError
+
+    lcError = ""
+    TRY
+        lcError = TRANSFORM(toHost.LastError)
+    CATCH
+        lcError = ""
+    ENDTRY
+    RETURN lcError
+ENDFUNC
+
+FUNCTION JsonEscape
+    LPARAMETERS tcText
+
+    LOCAL lcValue
+
+    lcValue = TRANSFORM(tcText)
+    lcValue = STRTRAN(lcValue, "\", "\\")
+    lcValue = STRTRAN(lcValue, CHR(13) + CHR(10), "\n")
+    lcValue = STRTRAN(lcValue, CHR(13), "\n")
+    lcValue = STRTRAN(lcValue, CHR(10), "\n")
+    lcValue = STRTRAN(lcValue, CHR(9), "\t")
+    lcValue = STRTRAN(lcValue, CHR(34), '\"')
+
+    RETURN lcValue
+ENDFUNC
+
+FUNCTION NormalizeBaseUrl
+    LPARAMETERS tcBaseUrl
+
+    LOCAL lcUrl
+
+    lcUrl = ALLTRIM(tcBaseUrl)
+    IF RIGHT(lcUrl, 1) = "/"
+        lcUrl = LEFT(lcUrl, LEN(lcUrl) - 1)
+    ENDIF
+    RETURN lcUrl
+ENDFUNC
+
+FUNCTION QuotePath
+    LPARAMETERS tcPath
+    RETURN CHR(34) + tcPath + CHR(34)
+ENDFUNC

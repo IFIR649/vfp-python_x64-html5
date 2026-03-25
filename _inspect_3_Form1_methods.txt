@@ -1,0 +1,29 @@
+PROCEDURE Resize
+
+LOCAL lnPad, lnBottom, lnW, lnH
+lnPad = 0
+lnBottom = 0
+
+IF PEMSTATUS(This, "Command1", 5) AND This.Command1.Visible
+    lnBottom = This.Command1.Height + 6
+ENDIF
+
+lnW = MAX(100, This.Width - (lnPad * 2))
+lnH = MAX(100, This.Height - (lnPad * 2) - lnBottom)
+
+IF PEMSTATUS(This, "oleBrowser", 5)
+    This.oleBrowser.Move(lnPad, lnPad, lnW, lnH)
+ENDIF
+
+IF PEMSTATUS(This, "Command1", 5)
+    This.Command1.Move((This.Width - This.Command1.Width) / 2, ;
+                       This.Height - This.Command1.Height - 3)
+ENDIF
+
+
+ENDPROC
+PROCEDURE Init
+This.ScaleMode = 3
+This.Resize
+
+ENDPROC

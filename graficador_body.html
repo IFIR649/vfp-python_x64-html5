@@ -1,0 +1,216 @@
+<body><main>
+<section class="hero">
+<h1 id="heroTitle"></h1>
+<p id="heroDesc"></p>
+<div class="stats">
+<div class="stat"><b>Registros</b><span id="stRows">0</span></div>
+<div class="stat"><b>Columnas</b><span id="stCols">0</span></div>
+<div class="stat"><b>CSV</b><span id="stCsv">-</span></div>
+</div>
+<div class="chips" id="chips"></div>
+</section>
+
+<section class="card topnav">
+<div class="tab-group">
+<button class="tab-btn active" id="btnViewBuilder" type="button" onclick="setView('builder')">Menu Graficador</button>
+<button class="tab-btn" id="btnViewDashboard" type="button" onclick="setView('dashboard')">Menu Dashboard</button>
+</div>
+<div class="hint">Primero define el layout y luego personaliza cada celda del dashboard.</div>
+</section>
+
+<section id="viewBuilder" class="view active">
+<section class="card">
+<div class="head"><h2>Tabla de datos en el archivo</h2><span class="meta" id="sourceMeta"></span></div>
+<div class="grid2">
+<div><label>Buscar en tabla</label><input id="srcSearch" type="text" placeholder="Filtrar por cualquier columna"></div>
+<div><label>Filas visibles (tabla fuente)</label><input id="srcLimit" type="number" min="50" step="50"></div>
+</div>
+<div class="table-wrap" id="sourceTableBox"></div>
+</section>
+
+<section class="card controls">
+<div class="step"><strong>Paso 0:</strong> Elige una plantilla, define cuantas filas tendra el dashboard y cuantas columnas usara cada fila.</div>
+<div class="guide-grid flow-guide-grid">
+<div class="guide-card full flow-guide-card flow-setup-card">
+<div class="card-head"><h3>Plantilla activa</h3><span class="meta" id="templateMeta"></span></div>
+<div class="top-actions">
+<div><label>Catalogo</label><select id="templateSelect"></select></div>
+<div><label>Acciones</label><div class="grid2"><div><button class="btn-soft" id="btnNewTemplate" type="button" style="width:100%">Nueva vacia</button></div><div><button class="btn-soft alt" id="btnCloneTemplate" type="button" style="width:100%">Duplicar actual</button></div></div></div>
+</div>
+<div class="field-table">
+<div><label>Nombre interno</label><input id="templateName" type="text"></div>
+<div><label>Titulo del dashboard</label><input id="templateTitle" type="text"></div>
+</div>
+<div><label>Descripcion</label><input id="templateDesc" type="text"></div>
+<div class="tool-row">
+<div><label>Filas del dashboard</label><input id="layoutRowCount" type="number" min="1" step="1"></div>
+<div><label>Accion</label><div class="grid2"><div><button class="btn-soft" id="btnSyncLayoutDraft" type="button" style="width:100%">Preparar filas</button></div><div><button class="btn" id="btnApplyLayout" type="button" style="width:100%">Aplicar layout</button></div></div></div>
+</div>
+<div id="layoutConfigurator"></div>
+<div class="notice" id="layoutStatus"></div>
+</div>
+<div class="guide-card full flow-guide-card flow-preview-card">
+<div class="card-head"><h3>Paso 1: Preview del layout</h3><span class="meta" id="wireframeMeta"></span></div>
+<div class="selected-band" id="selectedCellSummary"></div>
+<div class="muted">Haz clic sobre una celda para elegir si sera KPI, Tabla o Grafica.</div>
+<div id="layoutWireframe"></div>
+</div>
+</div>
+
+<div class="guide-card full">
+<div class="card-head"><h3>Paso 2: Configuracion del widget</h3><span class="meta" id="widgetMeta"></span></div>
+<div class="selected-band" id="widgetTargetBox"></div>
+<div class="type-chooser" id="widgetTypeChooser">
+<button class="type-btn" data-type="kpi" type="button">KPI</button>
+<button class="type-btn" data-type="table" type="button">Tabla</button>
+<button class="type-btn" data-type="chart" type="button">Grafica</button>
+<button class="type-btn" data-type="clear" type="button">Limpiar celda</button>
+</div>
+<div id="widgetEditorEmpty" class="empty">Selecciona una celda del preview para configurarla.</div>
+
+<div id="widgetEditorKpi" class="widget-form">
+<div class="field-table">
+<div><label>Titulo</label><input id="kpiTitle" type="text"></div>
+<div><label>Color de acento</label><select id="kpiColor"></select></div>
+</div>
+<div class="field-table">
+<div><label>Columna</label><select id="kpiColumn"></select></div>
+<div><label>Agregacion</label><select id="kpiAggregation"></select></div>
+</div>
+<div class="field-table">
+<div><label>Formato</label><select id="kpiFormat"></select></div>
+<div><label>Lectura</label><div class="helper-box">Los KPIs muestran un solo valor agregado usando los filtros globales del dashboard.</div></div>
+</div>
+</div>
+
+<div id="widgetEditorTable" class="widget-form">
+<div class="field-table">
+<div><label>Titulo</label><input id="tableWidgetTitle" type="text"></div>
+<div><label>Limite de filas</label><input id="tableWidgetLimit" type="number" min="1" step="1"></div>
+</div>
+<div class="field-table">
+<div><label>Ordenar por</label><select id="tableWidgetSortBy"></select></div>
+<div><label>Direccion</label><select id="tableWidgetSortDir"></select></div>
+</div>
+<div class="card-head"><h3>Columnas visibles</h3><span class="meta" id="tableWidgetColsMeta"></span></div>
+<div class="cols" id="tableWidgetColsGroups"></div>
+<div class="card-head" style="margin-top:12px"><h3>Filtros locales de la tabla</h3><span class="meta">Solo afectan este widget, despues de los filtros globales.</span></div>
+<div id="tableWidgetFiltersBox"></div>
+<button class="btn-soft" id="btnAddTableFilter" type="button">Agregar filtro local</button>
+</div>
+
+<div id="widgetEditorChart" class="widget-form">
+<div class="field-table">
+<div><label>Titulo</label><input id="chartTitle" type="text"></div>
+<div><label>Familia de analisis</label><select id="chartAnalysisMode"></select></div>
+</div>
+
+<div id="chartForm_categorias" class="widget-form active">
+<div class="field-table">
+<div><label>Columna X</label><select id="chartCatXCol"></select></div>
+<div><label>Columna Y</label><select id="chartCatYCol"></select><div class="muted" id="chartCatMetricHint"></div></div>
+</div>
+<div class="field-table">
+<div><label>Medida</label><select id="chartCatAggType"></select></div>
+<div><label>Visual</label><select id="chartCatChartType"></select></div>
+</div>
+<div class="field-table">
+<div><label>Top N</label><input id="chartCatTopN" type="number" min="1" step="1"></div>
+<div><label>Lectura</label><div class="helper-box">Ideal para comparar categorias y ordenar de mayor a menor.</div></div>
+</div>
+</div>
+
+<div id="chartForm_tendencia" class="widget-form">
+<div class="field-table">
+<div><label>Columna fecha</label><select id="chartTrendDateCol"></select></div>
+<div><label>Granularidad</label><select id="chartTrendGranularity"></select></div>
+</div>
+<div class="field-table">
+<div><label>Columna Y</label><select id="chartTrendYCol"></select></div>
+<div><label>Medida</label><select id="chartTrendAggType"></select></div>
+</div>
+<div class="field-table">
+<div><label>Visual</label><select id="chartTrendChartType"></select></div>
+<div><label>Lectura</label><div class="helper-box">Agrupa por dia, mes o año y muestra comportamiento en el tiempo.</div></div>
+</div>
+</div>
+
+<div id="chartForm_composicion" class="widget-form">
+<div class="field-table">
+<div><label>Columna X</label><select id="chartCompXCol"></select></div>
+<div><label>Columna Y</label><select id="chartCompYCol"></select><div class="muted" id="chartCompMetricHint"></div></div>
+</div>
+<div class="field-table">
+<div><label>Medida</label><select id="chartCompAggType"></select></div>
+<div><label>Visual</label><select id="chartCompChartType"></select></div>
+</div>
+<div class="field-table">
+<div><label>Top N</label><input id="chartCompTopN" type="number" min="1" step="1"></div>
+<div><label>Lectura</label><div class="helper-box">Mide participacion relativa entre grupos y funciona mejor con pocas categorias.</div></div>
+</div>
+</div>
+
+<div id="chartForm_scatter" class="widget-form">
+<div class="field-table">
+<div><label>Eje X</label><select id="chartScatterXCol"></select></div>
+<div><label>Eje Y</label><select id="chartScatterYCol"></select></div>
+</div>
+<div class="field-table">
+<div><label>Limite de puntos</label><input id="chartScatterPointLimit" type="number" min="1" step="1"></div>
+<div><label>Lectura</label><div class="helper-box">Usa este modo para correlacion sin agregacion intermedia.</div></div>
+</div>
+</div>
+
+<div class="card-head" style="margin-top:12px"><h3>Filtros locales de la grafica</h3><span class="meta">Solo afectan este widget, despues de los filtros globales.</span></div>
+<div id="chartWidgetFiltersBox"></div>
+<button class="btn-soft" id="btnAddChartFilter" type="button">Agregar filtro local</button>
+</div>
+</div>
+
+<div class="step"><strong>Paso 3:</strong> Ajusta filtros globales, rango de fechas y genera el JSON de salida para guardar la configuracion en VFP.</div>
+<div class="guide-grid">
+<div class="guide-card" id="dateRangeCard">
+<div class="card-head"><h3>Rango de fechas global</h3><span class="meta" id="dateRangeMeta"></span></div>
+<div class="field-table">
+<div><label>Aplicar rango</label><div class="helper-box"><label style="display:inline;font-size:13px;text-transform:none;letter-spacing:0;color:#334155"><input id="dateEnabled" type="checkbox"> Activar filtro por fechas para toda la plantilla</label></div></div>
+<div><label>Columna fecha</label><select id="filterDateCol"></select></div>
+</div>
+<div class="field-table">
+<div><label>Fecha inicial</label><input id="dateStart" type="text" placeholder="dd/mm/aaaa"></div>
+<div><label>Fecha final</label><input id="dateEnd" type="text" placeholder="dd/mm/aaaa"></div>
+</div>
+<div class="inline-error" id="dateHint"></div>
+</div>
+<div class="guide-card last">
+<div class="card-head"><h3>Filtros globales activos</h3><span class="meta" id="activeFilterMeta"></span></div>
+<div class="selected-band" id="builderChips"></div>
+</div>
+</div>
+
+<div class="guide-card full">
+<div class="card-head"><h3>Filtros globales</h3><span class="meta">Escoge una columna y el sistema ajusta los operadores segun el tipo de dato.</span></div>
+<div class="muted">Estos filtros afectan KPIs, tablas y graficas de la plantilla activa.</div>
+<div id="globalFiltersBox"></div>
+<button class="btn-soft" id="btnAddGlobalFilter" type="button">Agregar filtro global</button>
+</div>
+
+<div class="guide-card full">
+<div class="card-head"><h3>Exportacion de config</h3><span class="meta" id="exportMeta"></span></div>
+<div class="muted">El JSON respeta `ui` y `csv_options` y reemplaza solo `dashboard` con el catalogo actual de plantillas.</div>
+<div class="tool-row">
+<div><label>Accion</label><button class="btn-soft" id="btnRefreshExport" type="button" style="width:100%">Actualizar JSON</button></div>
+<div><label>Utilidad</label><button class="btn-soft alt" id="btnSelectExport" type="button" style="width:100%">Seleccionar texto</button></div>
+</div>
+<div style="margin-top:12px"><label>config.json exportado</label><textarea id="exportText" readonly></textarea></div>
+</div>
+</section>
+</section>
+
+<section id="viewDashboard" class="view">
+<section class="card">
+<div class="head"><h2 id="dashboardTitle">Dashboard</h2><span class="meta" id="dashboardMeta"></span></div>
+<p class="muted" id="dashboardDesc"></p>
+</section>
+<div id="dashboardRows"></div>
+</section>
+</main>

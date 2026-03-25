@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard VFP</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260324b">
+  <script defer src="/static/vendor/chart.umd.min.js"></script>
+  <script type="module" src="/static/app.js?v=20260324b"></script>
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">VFP + WebView2 + Polars</p>
+        <h1 id="heroTitle">Dashboard local</h1>
+        <p id="heroSubtitle" class="hero-subtitle">Cargando sesion...</p>
+      </div>
+      <div class="hero-meta">
+        <div class="metric-pill">
+          <span class="metric-label">Filas</span>
+          <strong id="totalRows">-</strong>
+        </div>
+        <div class="metric-pill">
+          <span class="metric-label">Columnas</span>
+          <strong id="totalColumns">-</strong>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="control-panel panel">
+        <div class="panel-head">
+          <h2>Controles</h2>
+          <button id="refreshButton" class="ghost-button" type="button">Recargar</button>
+        </div>
+
+        <section class="panel-section">
+          <label class="field-label" for="templateSelect">Plantilla</label>
+          <select id="templateSelect"></select>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-title-row">
+            <h3>Rango de fechas</h3>
+            <span id="dateRangeHint" class="chip">Sin fecha</span>
+          </div>
+          <div class="field-grid">
+            <label>
+              <span class="field-label">Desde</span>
+              <input id="dateStart" type="text" placeholder="dd/mm/yyyy">
+            </label>
+            <label>
+              <span class="field-label">Hasta</span>
+              <input id="dateEnd" type="text" placeholder="dd/mm/yyyy">
+            </label>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-title-row">
+            <h3>Filtros</h3>
+            <button id="addFilterButton" class="ghost-button" type="button">Agregar</button>
+          </div>
+          <div id="filterRows" class="filter-stack"></div>
+        </section>
+
+        <section class="panel-section action-row">
+          <button id="applyFiltersButton" type="button">Aplicar</button>
+          <button id="clearFiltersButton" class="ghost-button" type="button">Limpiar</button>
+        </section>
+
+        <section class="panel-section session-meta">
+          <h3>Fuente</h3>
+          <dl>
+            <div>
+              <dt>Archivo</dt>
+              <dd id="sourceName">-</dd>
+            </div>
+            <div>
+              <dt>Tipo</dt>
+              <dd id="sourceType">-</dd>
+            </div>
+            <div>
+              <dt>Filas visibles</dt>
+              <dd id="selectedRows">-</dd>
+            </div>
+          </dl>
+        </section>
+      </aside>
+
+      <section class="dashboard-panel panel">
+        <div class="panel-head">
+          <div>
+            <h2 id="dashboardTitle">Dashboard</h2>
+            <p id="dashboardDescription" class="muted">Esperando datos...</p>
+          </div>
+          <div id="statusPill" class="status-pill">Cargando</div>
+        </div>
+        <div id="dashboardGrid" class="dashboard-grid"></div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

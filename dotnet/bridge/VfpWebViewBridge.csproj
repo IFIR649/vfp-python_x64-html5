@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <PlatformTarget>x86</PlatformTarget>
+    <EnableComHosting>true</EnableComHosting>
+    <EnableRegFreeCom>true</EnableRegFreeCom>
+    <NETCoreSdkRuntimeIdentifier>win-x86</NETCoreSdkRuntimeIdentifier>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="VfpWebViewBridgeHost.cs" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3856.49" />
+    <RuntimeHostConfigurationOption Include="System.Runtime.InteropServices.COM.LoadComponentInDefaultContext" Value="true" />
+  </ItemGroup>
+  <Target Name="CopyWebView2LoaderToOutput" AfterTargets="Build">
+    <Copy
+      SourceFiles="$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll"
+      DestinationFiles="$(OutputPath)WebView2Loader.dll"
+      SkipUnchangedFiles="true"
+      Condition="Exists('$(OutputPath)runtimes\win-x86\native\WebView2Loader.dll')" />
+  </Target>
+</Project>

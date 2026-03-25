@@ -1,0 +1,6 @@
+Top = 624
+Left = 672
+Height = 27
+Width = 84
+Caption = "Opcion 2"
+Name = "Command2"

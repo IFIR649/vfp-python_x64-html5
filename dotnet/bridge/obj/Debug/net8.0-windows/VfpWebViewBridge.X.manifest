@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1"><assemblyIdentity type="win32" name="VfpWebViewBridge.X" version="1.0.0.0" /><file name="VfpWebViewBridge.comhost.dll"><comClass clsid="{b24278cc-7ede-4f28-b76f-215c0e98caf3}" threadingModel="Both" progid="VfpWebViewBridge.Host" /></file></assembly>
