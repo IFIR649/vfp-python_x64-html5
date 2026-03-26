@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''backend/engine.py'', doraise=True\\); print\\(''OK: engine.py compila correctamente''\\)\")"
     ]
   }
 }

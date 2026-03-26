@@ -80,7 +80,7 @@ Para que VFP pueda crear `VfpWebViewBridge.Host`, registra el bridge una vez con
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\register_vfp_webview_bridge.ps1
 ```
-
+ 
 ## Arranque del backend
 
 La forma más directa es:

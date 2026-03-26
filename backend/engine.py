@@ -30,6 +30,9 @@ from .legacy_config import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_CACHE_VERSION = 1
 DISTINCT_PREVIEW_ROWS = 400
+TEMP_TABLE_MIN_ROWS = 200_000
+TEMP_TABLE_MIN_WIDGETS = 3
+TEMP_TABLE_NAME = "__filtered"
 
 
 def _dtype_name(dtype: Any) -> str:
@@ -797,6 +800,7 @@ class SessionState:
     query_cache: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
     table_cache: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
     distinct_cache: OrderedDict[str, dict[str, Any]] = field(default_factory=OrderedDict)
+    _query_lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
     def templates(self) -> list[dict[str, Any]]:
@@ -914,6 +918,8 @@ class SessionStore:
         with self._lock:
             self._sessions[session_id] = session
 
+        threading.Thread(target=_warm_session, args=(session_id,), daemon=True).start()
+
         return self.session_snapshot(session_id)
 
     def session_snapshot(self, session_id: str) -> dict[str, Any]:
@@ -974,10 +980,48 @@ class SessionStore:
 STORE = SessionStore()
 
 
-def _create_duck_session(accelerated: AcceleratedSource) -> tuple[duckdb.DuckDBPyConnection, Path | None]:
+def _warm_session(session_id: str) -> None:
+    try:
+        session = STORE.get(session_id)
+    except KeyError:
+        return
+    try:
+        query_dashboard(session_id)
+    except Exception:
+        pass
+    try:
+        session = STORE.get(session_id)
+    except KeyError:
+        return
+    col_types = session.metadata.get("column_types", {})
+    text_cols = [c for c, t in col_types.items() if t == "text"]
+    for col in text_cols[:5]:
+        try:
+            STORE.get(session_id)
+            filter_values(session_id, col)
+        except Exception:
+            pass
+
+
+def _duck_resource_config() -> tuple[int, str]:
     import os as _os
-    threads = min(_os.cpu_count() or 2, 4)
-    conn = duckdb.connect(":memory:", config={"threads": threads, "memory_limit": "2GB"})
+    threads = min(_os.cpu_count() or 2, 8)
+    try:
+        import psutil
+        available_bytes = psutil.virtual_memory().available
+        target_bytes = int(available_bytes * 0.50)
+        floor_bytes = 512 * 1024 * 1024
+        ceiling_bytes = 16 * 1024 * 1024 * 1024
+        clamped = max(floor_bytes, min(target_bytes, ceiling_bytes))
+        memory_limit = f"{clamped // (1024 * 1024)}MB"
+    except Exception:
+        memory_limit = "1GB"
+    return threads, memory_limit
+
+
+def _create_duck_session(accelerated: AcceleratedSource) -> tuple[duckdb.DuckDBPyConnection, Path | None]:
+    threads, memory_limit = _duck_resource_config()
+    conn = duckdb.connect(":memory:", config={"threads": threads, "memory_limit": memory_limit})
     temp_parquet: Path | None = None
     if accelerated.accelerated_kind in ("parquet_cache", "parquet_source"):
         path_str = str(accelerated.accelerated_path).replace("\\", "/")
@@ -996,13 +1040,25 @@ def _add_where_condition(where: str, params: list[Any], clause: str, *values: An
     return (where + f" AND {clause}" if where else f"WHERE {clause}"), new_params
 
 
+def _numeric_sql(field: str) -> str:
+    if field.startswith("__opt_num_"):
+        return f'"{field}"'
+    return f'TRY_CAST("{field}" AS DOUBLE)'
+
+
+def _timestamp_sql(field: str) -> str:
+    if field.startswith("__opt_date_"):
+        return f'"{field}"'
+    return f'TRY_CAST("{field}" AS TIMESTAMP)'
+
+
 def _agg_sql(aggregation: str, field: str | None = None) -> str:
     agg = str(aggregation or "sum").strip().lower()
     if agg == "count":
         return "COUNT(*)"
     if not field:
         raise ValueError(f"La agregacion '{aggregation}' requiere un campo numerico.")
-    q = f'TRY_CAST("{field}" AS DOUBLE)'
+    q = _numeric_sql(field)
     if agg == "sum":
         return f"SUM({q})"
     if agg == "avg":
@@ -1015,7 +1071,7 @@ def _agg_sql(aggregation: str, field: str | None = None) -> str:
 
 
 def _date_bucket_sql(field: str, granularity: str) -> str:
-    cast = f'TRY_CAST("{field}" AS TIMESTAMP)'
+    cast = _timestamp_sql(field)
     g = str(granularity or "day").strip().lower()
     if g == "year":
         return f"STRFTIME({cast}, '%Y')"
@@ -1183,7 +1239,7 @@ def _build_where_sql(session: SessionState, context: QueryContext) -> tuple[str,
             nums = [n for n in nums if n is not None]
             if not nums:
                 continue
-            cast = f'TRY_CAST("{field}" AS DOUBLE)'
+            cast = _numeric_sql(field)
             if operator == "eq":
                 clauses.append(f"{cast} = ?"); params.append(nums[0])
             elif operator == "neq":
@@ -1204,7 +1260,7 @@ def _build_where_sql(session: SessionState, context: QueryContext) -> tuple[str,
             parsed = _parse_datetime_value(value, dayfirst)
             if not field or parsed is None:
                 continue
-            cast = f'TRY_CAST("{field}" AS TIMESTAMP)'
+            cast = _timestamp_sql(field)
             if operator == "eq":
                 clauses.append(f"{cast} = ?"); params.append(parsed)
             elif operator == "neq":
@@ -1238,7 +1294,7 @@ def _build_where_sql(session: SessionState, context: QueryContext) -> tuple[str,
         date_col = str(context.effective_date_range["column"]).strip()
         field = _date_field(session, date_col)
         if field:
-            cast = f'TRY_CAST("{field}" AS TIMESTAMP)'
+            cast = _timestamp_sql(field)
             start = _parse_datetime_value(context.effective_date_range.get("start"), dayfirst, end_of_day=False)
             end = _parse_datetime_value(context.effective_date_range.get("end"), dayfirst, end_of_day=True)
             if start is not None:
@@ -1261,7 +1317,7 @@ def _widget_error(widget: dict[str, Any], message: str) -> dict[str, Any]:
     }
 
 
-def _duck_batch_kpis(session: SessionState, widgets: list[Any], where: str, params: list[Any]) -> dict[str, Any]:
+def _duck_batch_kpis(session: SessionState, widgets: list[Any], where: str, params: list[Any], table_name: str = "session_data") -> dict[str, Any]:
     """Single SQL query for COUNT(*) + all non-count KPI aggregations."""
     selects = ["COUNT(*) AS __total_count"]
     kpi_ids: list[str] = []
@@ -1280,7 +1336,7 @@ def _duck_batch_kpis(session: SessionState, widgets: list[Any], where: str, para
         selects.append(f"{_agg_sql(aggregation, field)} AS __kpi_{len(kpi_ids)}")
         kpi_ids.append(str(widget.get("id", "")))
 
-    sql = f"SELECT {', '.join(selects)} FROM session_data {where}"
+    sql = f"SELECT {', '.join(selects)} FROM {table_name} {where}"
     row = session.conn.execute(sql, params).fetchone()
     result: dict[str, Any] = {"__total_count": int(row[0]) if row else 0}
     for i, wid in enumerate(kpi_ids):
@@ -1288,7 +1344,7 @@ def _duck_batch_kpis(session: SessionState, widgets: list[Any], where: str, para
     return result
 
 
-def _render_kpi(session: SessionState, widget: dict[str, Any], where: str, params: list[Any], batch: dict[str, Any]) -> dict[str, Any]:
+def _render_kpi(session: SessionState, widget: dict[str, Any], where: str, params: list[Any], batch: dict[str, Any], table_name: str = "session_data") -> dict[str, Any]:
     column = session.resolver.resolve(widget.get("column"))
     if column not in session.metadata["all_columns"]:
         return _widget_error(widget, f"La columna '{widget.get('column')}' no existe en la fuente.")
@@ -1302,7 +1358,7 @@ def _render_kpi(session: SessionState, widget: dict[str, Any], where: str, param
         field = _numeric_field(session, column)
         if not field:
             return _widget_error(widget, f"La columna '{column}' no es numerica para KPI {aggregation}.")
-        row = session.conn.execute(f"SELECT {_agg_sql(aggregation, field)} FROM session_data {where}", params).fetchone()
+        row = session.conn.execute(f"SELECT {_agg_sql(aggregation, field)} FROM {table_name} {where}", params).fetchone()
         value = _normalize_scalar(row[0] if row else None)
     return {
         "id": widget.get("id", ""),
@@ -1316,7 +1372,7 @@ def _render_kpi(session: SessionState, widget: dict[str, Any], where: str, param
     }
 
 
-def _render_chart(session: SessionState, widget: dict[str, Any], where: str, params: list[Any]) -> dict[str, Any]:
+def _render_chart(session: SessionState, widget: dict[str, Any], where: str, params: list[Any], table_name: str = "session_data") -> dict[str, Any]:
     x_column = session.resolver.resolve(widget.get("x_column"))
     y_column = session.resolver.resolve(widget.get("y_column"))
     date_column = session.resolver.resolve(widget.get("date_column"))
@@ -1331,9 +1387,11 @@ def _render_chart(session: SessionState, widget: dict[str, Any], where: str, par
         y_field = _numeric_field(session, y_column)
         if not x_field or not y_field:
             return _widget_error(widget, "La grafica scatter requiere columnas numericas validas.")
+        x_expr = _numeric_sql(x_field)
+        y_expr = _numeric_sql(y_field)
         w2, p2 = _add_where_condition(where, list(params),
-            f'TRY_CAST("{x_field}" AS DOUBLE) IS NOT NULL AND TRY_CAST("{y_field}" AS DOUBLE) IS NOT NULL')
-        sql = f'SELECT TRY_CAST("{x_field}" AS DOUBLE), TRY_CAST("{y_field}" AS DOUBLE) FROM session_data {w2} LIMIT ?'
+            f'{x_expr} IS NOT NULL AND {y_expr} IS NOT NULL')
+        sql = f'SELECT {x_expr}, {y_expr} FROM {table_name} {w2} LIMIT ?'
         rows = session.conn.execute(sql, p2 + [point_limit]).fetchall()
         data_points = [{"x": _normalize_scalar(r[0]), "y": _normalize_scalar(r[1])} for r in rows]
         return {
@@ -1358,7 +1416,7 @@ def _render_chart(session: SessionState, widget: dict[str, Any], where: str, par
             y_field = None
         agg_expr = _agg_sql(aggregation, y_field)
         w2, p2 = _add_where_condition(where, list(params), f'"{date_field}" IS NOT NULL')
-        sql = f"SELECT {bucket} AS label, {agg_expr} AS value FROM session_data {w2} GROUP BY label ORDER BY label ASC"
+        sql = f"SELECT {bucket} AS label, {agg_expr} AS value FROM {table_name} {w2} GROUP BY label ORDER BY label ASC"
         rows = session.conn.execute(sql, p2).fetchall()
         labels = [str(r[0]) if r[0] is not None else "" for r in rows]
         values = [_normalize_scalar(r[1]) for r in rows]
@@ -1380,7 +1438,7 @@ def _render_chart(session: SessionState, widget: dict[str, Any], where: str, par
     else:
         y_field = None
     label_expr = f"COALESCE(TRIM(CAST(\"{x_column}\" AS VARCHAR)), '(Sin valor)')"
-    sql = f"SELECT {label_expr} AS label, {_agg_sql(aggregation, y_field)} AS value FROM session_data {where} GROUP BY label ORDER BY value DESC NULLS LAST LIMIT ?"
+    sql = f"SELECT {label_expr} AS label, {_agg_sql(aggregation, y_field)} AS value FROM {table_name} {where} GROUP BY label ORDER BY value DESC NULLS LAST LIMIT ?"
     rows = session.conn.execute(sql, params + [top_n]).fetchall()
     labels = [str(r[0]) if r[0] is not None else "(Sin valor)" for r in rows]
     values = [_normalize_scalar(r[1]) for r in rows]
@@ -1400,6 +1458,7 @@ def _table_payload(
     params: list[Any],
     page: int,
     page_size: int | None = None,
+    table_name: str = "session_data",
     sort_by: str | None = None,
     sort_dir: str | None = None,
 ) -> dict[str, Any]:
@@ -1421,19 +1480,19 @@ def _table_payload(
         if col_type == "number":
             f = _numeric_field(session, order_column)
             if f:
-                order_clause = f'ORDER BY TRY_CAST("{f}" AS DOUBLE) {desc}'
+                order_clause = f'ORDER BY {_numeric_sql(f)} {desc}'
         elif col_type == "date":
             f = _date_field(session, order_column)
             if f:
-                order_clause = f'ORDER BY TRY_CAST("{f}" AS TIMESTAMP) {desc}'
+                order_clause = f'ORDER BY {_timestamp_sql(f)} {desc}'
         if not order_clause:
             order_clause = f"ORDER BY LOWER(TRIM(COALESCE(CAST(\"{order_column}\" AS VARCHAR), ''))) {desc}"
 
-    count_row = session.conn.execute(f"SELECT COUNT(*) FROM session_data {where}", params).fetchone()
+    count_row = session.conn.execute(f"SELECT COUNT(*) FROM {table_name} {where}", params).fetchone()
     total_rows = int(count_row[0]) if count_row else 0
 
     cols_sql = ", ".join(f'"{c}"' for c in columns)
-    data_sql = f"SELECT {cols_sql} FROM session_data {where} {order_clause} LIMIT ? OFFSET ?"
+    data_sql = f"SELECT {cols_sql} FROM {table_name} {where} {order_clause} LIMIT ? OFFSET ?"
     raw_rows = session.conn.execute(data_sql, params + [limit, offset]).fetchall()
     rows = [{col: _normalize_scalar(val) for col, val in zip(columns, row)} for row in raw_rows]
     total_pages = max(1, math.ceil(total_rows / limit)) if total_rows else 1
@@ -1447,14 +1506,14 @@ def _table_payload(
     }
 
 
-def _render_widget(session: SessionState, widget: dict[str, Any], where: str, params: list[Any], batch: dict[str, Any]) -> dict[str, Any]:
+def _render_widget(session: SessionState, widget: dict[str, Any], where: str, params: list[Any], batch: dict[str, Any], table_name: str = "session_data") -> dict[str, Any]:
     widget_type = str(widget.get("type") or "").strip().lower()
     if widget_type == "kpi":
-        return _render_kpi(session, widget, where, params, batch)
+        return _render_kpi(session, widget, where, params, batch, table_name=table_name)
     if widget_type == "chart":
-        return _render_chart(session, widget, where, params)
+        return _render_chart(session, widget, where, params, table_name=table_name)
     if widget_type == "table":
-        return _table_payload(session, widget, where, params, 1)
+        return _table_payload(session, widget, where, params, 1, table_name=table_name)
     return _widget_error(widget, f"Tipo de widget no soportado: {widget_type}")
 
 
@@ -1482,43 +1541,76 @@ def query_dashboard(
         response["performance"]["elapsed_ms"] = int((perf_time.perf_counter() - started) * 1000)
         return response
 
-    t_where_start = perf_time.perf_counter()
-    where, params = _build_where_sql(session, context)
-    t_kpi_start = perf_time.perf_counter()
-    all_widgets = [w for w in context.template.get("widgets", []) if isinstance(w, dict)]
-    batch = _duck_batch_kpis(session, all_widgets, where, params)
-    t_widgets_start = perf_time.perf_counter()
-    widgets = [_render_widget(session, widget, where, params, batch) for widget in all_widgets]
-    t_done = perf_time.perf_counter()
+    with session._query_lock:
+        cached_response = session.query_cache.get(response_cache_key)
+        if cached_response is not None:
+            session.query_cache.move_to_end(response_cache_key)
+            response = deepcopy(cached_response)
+            response.setdefault("performance", {})
+            response["performance"]["filtered_cache_hit"] = True
+            response["performance"]["elapsed_ms"] = int((perf_time.perf_counter() - started) * 1000)
+            return response
 
-    response = {
-        "ok": True,
-        "session_id": session.session_id,
-        "template_id": context.template.get("id", ""),
-        "template": deepcopy(context.template),
-        "filters": context.effective_filters,
-        "invalid_filters": context.invalid_filters,
-        "date_range": context.effective_date_range,
-        "summary": {
-            "selected_row_count": batch.get("__total_count", 0),
-            "total_row_count": session.metadata["row_count"],
-            "source_name": session.metadata["source_name"],
-        },
-        "widgets": widgets,
-        "performance": {
-            "filtered_cache_hit": False,
-            "elapsed_ms": int((t_done - started) * 1000),
-            "phases": {
-                "where_ms": int((t_kpi_start - t_where_start) * 1000),
-                "kpi_ms": int((t_widgets_start - t_kpi_start) * 1000),
-                "widgets_ms": int((t_done - t_widgets_start) * 1000),
+        t_where_start = perf_time.perf_counter()
+        where, params = _build_where_sql(session, context)
+        all_widgets = [w for w in context.template.get("widgets", []) if isinstance(w, dict)]
+
+        table_name = "session_data"
+        use_temp = (
+            where
+            and session.metadata["row_count"] > TEMP_TABLE_MIN_ROWS
+            and len(all_widgets) >= TEMP_TABLE_MIN_WIDGETS
+        )
+        if use_temp:
+            try:
+                session.conn.execute(f"CREATE TEMP TABLE {TEMP_TABLE_NAME} AS SELECT * FROM session_data {where}", params)
+                table_name = TEMP_TABLE_NAME
+                where = ""
+                params = []
+            except Exception:
+                table_name = "session_data"
+
+        try:
+            t_kpi_start = perf_time.perf_counter()
+            batch = _duck_batch_kpis(session, all_widgets, where, params, table_name=table_name)
+            t_widgets_start = perf_time.perf_counter()
+            widgets = [_render_widget(session, widget, where, params, batch, table_name=table_name) for widget in all_widgets]
+            t_done = perf_time.perf_counter()
+        finally:
+            if table_name == TEMP_TABLE_NAME:
+                try:
+                    session.conn.execute(f"DROP TABLE IF EXISTS {TEMP_TABLE_NAME}")
+                except Exception:
+                    pass
+
+        response = {
+            "ok": True,
+            "session_id": session.session_id,
+            "template_id": context.template.get("id", ""),
+            "template": deepcopy(context.template),
+            "filters": context.effective_filters,
+            "invalid_filters": context.invalid_filters,
+            "date_range": context.effective_date_range,
+            "summary": {
+                "selected_row_count": batch.get("__total_count", 0),
+                "total_row_count": session.metadata["row_count"],
+                "source_name": session.metadata["source_name"],
             },
-        },
-    }
-    session.query_cache[response_cache_key] = deepcopy(response)
-    session.query_cache.move_to_end(response_cache_key)
-    session.shrink_caches()
-    return response
+            "widgets": widgets,
+            "performance": {
+                "filtered_cache_hit": False,
+                "elapsed_ms": int((t_done - started) * 1000),
+                "phases": {
+                    "where_ms": int((t_kpi_start - t_where_start) * 1000),
+                    "kpi_ms": int((t_widgets_start - t_kpi_start) * 1000),
+                    "widgets_ms": int((t_done - t_widgets_start) * 1000),
+                },
+            },
+        }
+        session.query_cache[response_cache_key] = deepcopy(response)
+        session.query_cache.move_to_end(response_cache_key)
+        session.shrink_caches()
+        return response
 
 
 def query_table_page(
@@ -1555,26 +1647,36 @@ def query_table_page(
         response["performance"]["elapsed_ms"] = int((perf_time.perf_counter() - started) * 1000)
         return response
 
-    where, params = _build_where_sql(session, context)
-    table_result = _table_payload(session, widget, where, params, page, page_size=page_size, sort_by=sort_by, sort_dir=sort_dir)
-    response = {
-        "ok": True,
-        "session_id": session.session_id,
-        "widget_id": widget_id,
-        "template_id": context.template.get("id", ""),
-        "filters": context.effective_filters,
-        "invalid_filters": context.invalid_filters,
-        "date_range": context.effective_date_range,
-        "table": table_result,
-        "performance": {
-            "filtered_cache_hit": False,
-            "elapsed_ms": int((perf_time.perf_counter() - started) * 1000),
-        },
-    }
-    session.table_cache[response_cache_key] = deepcopy(response)
-    session.table_cache.move_to_end(response_cache_key)
-    session.shrink_caches()
-    return response
+    with session._query_lock:
+        cached_response = session.table_cache.get(response_cache_key)
+        if cached_response is not None:
+            session.table_cache.move_to_end(response_cache_key)
+            response = deepcopy(cached_response)
+            response.setdefault("performance", {})
+            response["performance"]["filtered_cache_hit"] = True
+            response["performance"]["elapsed_ms"] = int((perf_time.perf_counter() - started) * 1000)
+            return response
+
+        where, params = _build_where_sql(session, context)
+        table_result = _table_payload(session, widget, where, params, page, page_size=page_size, sort_by=sort_by, sort_dir=sort_dir)
+        response = {
+            "ok": True,
+            "session_id": session.session_id,
+            "widget_id": widget_id,
+            "template_id": context.template.get("id", ""),
+            "filters": context.effective_filters,
+            "invalid_filters": context.invalid_filters,
+            "date_range": context.effective_date_range,
+            "table": table_result,
+            "performance": {
+                "filtered_cache_hit": False,
+                "elapsed_ms": int((perf_time.perf_counter() - started) * 1000),
+            },
+        }
+        session.table_cache[response_cache_key] = deepcopy(response)
+        session.table_cache.move_to_end(response_cache_key)
+        session.shrink_caches()
+        return response
 
 
 def filter_values(
@@ -1605,25 +1707,35 @@ def filter_values(
         response["performance"]["elapsed_ms"] = int((perf_time.perf_counter() - started) * 1000)
         return response
 
-    where, params = _build_where_sql(session, context)
-    val_expr = f"LOWER(TRIM(COALESCE(CAST(\"{resolved_column}\" AS VARCHAR), '')))"
-    if text_search:
-        where, params = _add_where_condition(where, params, f"INSTR({val_expr}, ?) > 0", text_search)
-    where, params = _add_where_condition(where, params, f"TRIM(COALESCE(CAST(\"{resolved_column}\" AS VARCHAR), '')) != ''")
-    sql = f"SELECT DISTINCT TRIM(COALESCE(CAST(\"{resolved_column}\" AS VARCHAR), '')) AS value FROM session_data {where} ORDER BY value LIMIT ?"
-    rows = session.conn.execute(sql, params + [effective_limit]).fetchall()
-    values = [str(r[0]) for r in rows if r[0]]
+    with session._query_lock:
+        cached_response = session.distinct_cache.get(distinct_key)
+        if cached_response is not None:
+            session.distinct_cache.move_to_end(distinct_key)
+            response = deepcopy(cached_response)
+            response.setdefault("performance", {})
+            response["performance"]["filtered_cache_hit"] = True
+            response["performance"]["elapsed_ms"] = int((perf_time.perf_counter() - started) * 1000)
+            return response
 
-    response = {
-        "ok": True,
-        "column": resolved_column,
-        "values": values,
-        "performance": {
-            "filtered_cache_hit": False,
-            "elapsed_ms": int((perf_time.perf_counter() - started) * 1000),
-        },
-    }
-    session.distinct_cache[distinct_key] = deepcopy(response)
-    session.distinct_cache.move_to_end(distinct_key)
-    session.shrink_caches()
-    return response
+        where, params = _build_where_sql(session, context)
+        val_expr = f"LOWER(TRIM(COALESCE(CAST(\"{resolved_column}\" AS VARCHAR), '')))"
+        if text_search:
+            where, params = _add_where_condition(where, params, f"INSTR({val_expr}, ?) > 0", text_search)
+        where, params = _add_where_condition(where, params, f"TRIM(COALESCE(CAST(\"{resolved_column}\" AS VARCHAR), '')) != ''")
+        sql = f"SELECT DISTINCT TRIM(COALESCE(CAST(\"{resolved_column}\" AS VARCHAR), '')) AS value FROM session_data {where} ORDER BY value LIMIT ?"
+        rows = session.conn.execute(sql, params + [effective_limit]).fetchall()
+        values = [str(r[0]) for r in rows if r[0]]
+
+        response = {
+            "ok": True,
+            "column": resolved_column,
+            "values": values,
+            "performance": {
+                "filtered_cache_hit": False,
+                "elapsed_ms": int((perf_time.perf_counter() - started) * 1000),
+            },
+        }
+        session.distinct_cache[distinct_key] = deepcopy(response)
+        session.distinct_cache.move_to_end(distinct_key)
+        session.shrink_caches()
+        return response
