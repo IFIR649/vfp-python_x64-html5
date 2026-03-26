@@ -43,7 +43,7 @@ FUNCTION DashboardBridgeInitForm
     ENDIF
 
     IF !PEMSTATUS(toForm, "cConfigPath", 5)
-        toForm.AddProperty("cConfigPath", "config.json")
+        toForm.AddProperty("cConfigPath", "config-1.json")
     ENDIF
 
     IF !PEMSTATUS(toForm, "cConfigJson", 5)

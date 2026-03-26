@@ -14,7 +14,7 @@
     ],
     "configProperties": {
       "System.Runtime.InteropServices.COM.LoadComponentInDefaultContext": true,
-      "CSWINRT_USE_WINDOWS_UI_XAML_PROJECTIONS": false
+      "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization": true
     }
   }
 }

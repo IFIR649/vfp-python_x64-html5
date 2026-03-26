@@ -1,20 +1,20 @@
 {
   "format": 1,
   "restore": {
-    "C:\\sistemas\\python_integracion_bloques\\dotnet\\bridge\\VfpWebViewBridge.csproj": {}
+    "E:\\vfppython\\vfp-python_x64-html5\\dotnet\\bridge\\VfpWebViewBridge.csproj": {}
   },
   "projects": {
-    "C:\\sistemas\\python_integracion_bloques\\dotnet\\bridge\\VfpWebViewBridge.csproj": {
+    "E:\\vfppython\\vfp-python_x64-html5\\dotnet\\bridge\\VfpWebViewBridge.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\sistemas\\python_integracion_bloques\\dotnet\\bridge\\VfpWebViewBridge.csproj",
+        "projectUniqueName": "E:\\vfppython\\vfp-python_x64-html5\\dotnet\\bridge\\VfpWebViewBridge.csproj",
         "projectName": "VfpWebViewBridge",
-        "projectPath": "C:\\sistemas\\python_integracion_bloques\\dotnet\\bridge\\VfpWebViewBridge.csproj",
-        "packagesPath": "C:\\Users\\PROGRAMADOR01\\.nuget\\packages\\",
-        "outputPath": "C:\\sistemas\\python_integracion_bloques\\dotnet\\bridge\\obj\\",
+        "projectPath": "E:\\vfppython\\vfp-python_x64-html5\\dotnet\\bridge\\VfpWebViewBridge.csproj",
+        "packagesPath": "C:\\Users\\Alexis\\.nuget\\packages\\",
+        "outputPath": "E:\\vfppython\\vfp-python_x64-html5\\dotnet\\bridge\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
-          "C:\\Users\\PROGRAMADOR01\\AppData\\Roaming\\NuGet\\NuGet.Config"
+          "C:\\Users\\Alexis\\AppData\\Roaming\\NuGet\\NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net8.0-windows"
@@ -37,8 +37,7 @@
           "enableAudit": "true",
           "auditLevel": "low",
           "auditMode": "direct"
-        },
-        "SdkAnalysisLevel": "10.0.200"
+        }
       },
       "frameworks": {
         "net8.0-windows7.0": {
@@ -60,24 +59,6 @@
           ],
           "assetTargetFallback": true,
           "warn": true,
-          "downloadDependencies": [
-            {
-              "name": "Microsoft.AspNetCore.App.Ref",
-              "version": "[8.0.25, 8.0.25]"
-            },
-            {
-              "name": "Microsoft.NETCore.App.Host.win-x86",
-              "version": "[8.0.25, 8.0.25]"
-            },
-            {
-              "name": "Microsoft.NETCore.App.Ref",
-              "version": "[8.0.25, 8.0.25]"
-            },
-            {
-              "name": "Microsoft.WindowsDesktop.App.Ref",
-              "version": "[8.0.25, 8.0.25]"
-            }
-          ],
           "frameworkReferences": {
             "Microsoft.NETCore.App": {
               "privateAssets": "all"
@@ -86,7 +67,7 @@
               "privateAssets": "none"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.201/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.415/PortableRuntimeIdentifierGraph.json"
         }
       }
     }

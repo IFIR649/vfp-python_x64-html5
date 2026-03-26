@@ -44,9 +44,11 @@ Para una auditoría más completa del repo, limpieza sugerida y diferencias con 
 - Windows
 - Python disponible en `PATH`
 - dependencias Python del backend
+- bridge COM `VfpWebViewBridge.Host` registrado en Windows
+- .NET Windows Desktop Runtime 8 x86 instalado: <https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/8.0.25/windowsdesktop-runtime-8.0.25-win-x86.exe>
 - WebView2 Runtime instalado
 - Visual FoxPro 9 para la integración VFP
-- .NET 8 SDK si se necesita compilar o registrar el bridge
+- .NET 8 SDK instalado si se necesita compilar o registrar el bridge: <https://dotnet.microsoft.com/en-us/download/dotnet/8.0>
 
 ## Instalación de dependencias Python
 
@@ -61,6 +63,23 @@ Dependencias visibles:
 - `fastapi`
 - `uvicorn`
 - `polars`
+- `duckdb`
+
+## Registro del bridge COM
+
+Antes de registrar el bridge, instala el runtime x86 de .NET Desktop:
+
+<https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/8.0.25/windowsdesktop-runtime-8.0.25-win-x86.exe>
+
+Si `dotnet build` no está disponible, instala primero .NET 8 SDK:
+
+<https://dotnet.microsoft.com/en-us/download/dotnet/8.0>
+
+Para que VFP pueda crear `VfpWebViewBridge.Host`, registra el bridge una vez con privilegios de administrador:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\register_vfp_webview_bridge.ps1
+```
 
 ## Arranque del backend
 
