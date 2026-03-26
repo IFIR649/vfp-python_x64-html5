@@ -1,0 +1,368 @@
+{
+  "version": 1,
+  "ui": {
+    "app_title": "Dashboard Ventas",
+    "subtitle": "Demo KPI, tablas y graficas para ventas.csv"
+  },
+  "csv_options": {
+    "base_dir": "csv",
+    "delimiter": ";",
+    "decimal": ",",
+    "encoding": "utf-8-sig",
+    "dayfirst": true
+  },
+  "dashboard": {
+    "title": "Dashboard Ventas",
+    "description": "Plantilla demo para explorar tickets y ventas por sucursal.",
+    "allow_user_builder": true,
+    "runtime": {
+      "strategy": "service_api",
+      "mode": "server",
+      "dashboard_only": true,
+      "data_backend": "polars",
+      "query_scope": {
+        "date_column": "apertura",
+        "start": "01/02/2026",
+        "end": "27/02/2026",
+        "order": "desc"
+      },
+      "max_rows": 50000,
+      "force_safe_template": false,
+      "optimizer": {
+        "session_sorted_variants": 2
+      }
+    },
+    "defaults": {
+      "analysis_mode": "categorias",
+      "x_column": "empresa",
+      "y_column": "total",
+      "date_column": "apertura",
+      "aggregation": "sum",
+      "chart_type": "bar",
+      "date_granularity": "day",
+      "top_n": 10,
+      "point_limit": 150,
+      "table_limit": 200,
+      "sort_dir": "desc"
+    },
+    "active_template_id": "ventas-resumen",
+    "templates": [
+      {
+        "id": "ventas-resumen",
+        "name": "Demo Ventas",
+        "title": "Resumen de Ventas",
+        "description": "KPIs de venta, tendencia diaria y detalle por ticket.",
+        "layout": {
+          "rows": [
+            {
+              "id": "row_1",
+              "columns": 4,
+              "cells": [
+                { "id": "cell_1_1" },
+                { "id": "cell_1_2" },
+                { "id": "cell_1_3" },
+                { "id": "cell_1_4" }
+              ]
+            },
+            {
+              "id": "row_2",
+              "columns": 3,
+              "cells": [
+                { "id": "cell_2_1" },
+                { "id": "cell_2_2" },
+                { "id": "cell_2_3" }
+              ]
+            },
+            {
+              "id": "row_3",
+              "columns": 2,
+              "cells": [
+                { "id": "cell_3_1" },
+                { "id": "cell_3_2" }
+              ]
+            },
+            {
+              "id": "row_4",
+              "columns": 1,
+              "cells": [
+                { "id": "cell_4_1" }
+              ]
+            }
+          ]
+        },
+        "widgets": [
+          {
+            "id": "kpi_venta_total",
+            "cell_id": "cell_1_1",
+            "type": "kpi",
+            "title": "Venta total",
+            "column": "total",
+            "aggregation": "sum",
+            "format": "currency",
+            "accent_color": "#1d4ed8"
+          },
+          {
+            "id": "kpi_tickets",
+            "cell_id": "cell_1_2",
+            "type": "kpi",
+            "title": "Tickets",
+            "column": "apertura",
+            "aggregation": "count",
+            "format": "integer",
+            "accent_color": "#0f766e"
+          },
+          {
+            "id": "kpi_ticket_promedio",
+            "cell_id": "cell_1_3",
+            "type": "kpi",
+            "title": "Ticket promedio",
+            "column": "total",
+            "aggregation": "avg",
+            "format": "currency",
+            "accent_color": "#ea580c"
+          },
+          {
+            "id": "kpi_personas_totales",
+            "cell_id": "cell_1_4",
+            "type": "kpi",
+            "title": "Personas totales",
+            "column": "personas",
+            "aggregation": "sum",
+            "format": "integer",
+            "accent_color": "#7c3aed"
+          },
+          {
+            "id": "chart_ventas_por_empresa",
+            "cell_id": "cell_2_1",
+            "type": "chart",
+            "title": "Ventas por sucursal",
+            "analysis_mode": "categorias",
+            "chart_type": "bar",
+            "x_column": "empresa",
+            "y_column": "total",
+            "date_column": "apertura",
+            "aggregation": "sum",
+            "date_granularity": "day",
+            "top_n": 10,
+            "point_limit": 150,
+            "filters": []
+          },
+          {
+            "id": "kpi_articulos_vendidos",
+            "cell_id": "cell_2_2",
+            "type": "kpi",
+            "title": "Articulos vendidos",
+            "column": "totalarticulos",
+            "aggregation": "sum",
+            "format": "number",
+            "accent_color": "#0891b2"
+          },
+          {
+            "id": "chart_tendencia_diaria",
+            "cell_id": "cell_2_3",
+            "type": "chart",
+            "title": "Tendencia diaria",
+            "analysis_mode": "tendencia",
+            "chart_type": "line",
+            "x_column": "apertura",
+            "y_column": "total",
+            "date_column": "apertura",
+            "aggregation": "sum",
+            "date_granularity": "day",
+            "top_n": 31,
+            "point_limit": 150,
+            "filters": []
+          },
+          {
+            "id": "chart_ventas_por_personas",
+            "cell_id": "cell_3_1",
+            "type": "chart",
+            "title": "Venta por numero de personas",
+            "analysis_mode": "categorias",
+            "chart_type": "horizontalBar",
+            "x_column": "personas",
+            "y_column": "total",
+            "date_column": "apertura",
+            "aggregation": "sum",
+            "date_granularity": "day",
+            "top_n": 10,
+            "point_limit": 150,
+            "filters": []
+          },
+          {
+            "id": "chart_participacion_sucursal",
+            "cell_id": "cell_3_2",
+            "type": "chart",
+            "title": "Participacion por sucursal",
+            "analysis_mode": "composicion",
+            "chart_type": "doughnut",
+            "x_column": "empresa",
+            "y_column": "total",
+            "date_column": "apertura",
+            "aggregation": "sum",
+            "date_granularity": "day",
+            "top_n": 10,
+            "point_limit": 150,
+            "filters": []
+          },
+          {
+            "id": "tabla_detalle_ventas",
+            "cell_id": "cell_4_1",
+            "type": "table",
+            "title": "Detalle de ventas",
+            "columns": [
+              "empresa",
+              "apertura",
+              "personas",
+              "totalarticulos",
+              "subtotal",
+              "total",
+              "totalimpuesto",
+              "pagado",
+              "cancelado"
+            ],
+            "limit": 200,
+            "sort_by": "apertura",
+            "sort_dir": "desc",
+            "filters": []
+          }
+        ],
+        "global_filters": [],
+        "date_range": {
+          "enabled": false,
+          "column": "apertura",
+          "start": "",
+          "end": ""
+        }
+      }
+    ]
+  },
+  "dashboard_modular": {
+    "enabled": true,
+    "template_id": "ventas-resumen",
+    "template_name": "Ventas Resumen",
+    "title": "Dashboard Ventas",
+    "description": "Dashboard modular adaptado al CSV de ventas por ticket.",
+    "query_scope": {
+      "start": "01/02/2026",
+      "end": "27/02/2026",
+      "order": "desc"
+    },
+    "layout_rows": [4, 3, 2, 1],
+    "widgets": [
+      {
+        "factory": "kpi_sum",
+        "cell": "cell_1_1",
+        "id": "kpi_venta_total",
+        "title": "Venta total",
+        "column": "total",
+        "format": "currency",
+        "accent_color": "#1d4ed8"
+      },
+      {
+        "factory": "kpi_count",
+        "cell": "cell_1_2",
+        "id": "kpi_tickets",
+        "title": "Tickets",
+        "column": "apertura",
+        "format": "integer",
+        "accent_color": "#0f766e"
+      },
+      {
+        "factory": "kpi_avg",
+        "cell": "cell_1_3",
+        "id": "kpi_ticket_promedio",
+        "title": "Ticket promedio",
+        "column": "total",
+        "format": "currency",
+        "accent_color": "#ea580c"
+      },
+      {
+        "factory": "kpi_sum",
+        "cell": "cell_1_4",
+        "id": "kpi_personas_totales",
+        "title": "Personas totales",
+        "column": "personas",
+        "format": "integer",
+        "accent_color": "#7c3aed"
+      },
+      {
+        "factory": "bar",
+        "cell": "cell_2_1",
+        "id": "chart_ventas_por_empresa",
+        "title": "Ventas por sucursal",
+        "x_column": "empresa",
+        "y_column": "total",
+        "aggregation": "sum",
+        "top_n": 10
+      },
+      {
+        "factory": "kpi_sum",
+        "cell": "cell_2_2",
+        "id": "kpi_articulos_vendidos",
+        "title": "Articulos vendidos",
+        "column": "totalarticulos",
+        "format": "number",
+        "accent_color": "#0891b2"
+      },
+      {
+        "factory": "linea",
+        "cell": "cell_2_3",
+        "id": "chart_tendencia_diaria",
+        "title": "Tendencia diaria",
+        "x_column": "apertura",
+        "y_column": "total",
+        "date_column": "apertura",
+        "analysis_mode": "tendencia",
+        "aggregation": "sum",
+        "date_granularity": "day"
+      },
+      {
+        "factory": "barra_lateral",
+        "cell": "cell_3_1",
+        "id": "chart_ventas_por_personas",
+        "title": "Venta por numero de personas",
+        "x_column": "personas",
+        "y_column": "total",
+        "aggregation": "sum",
+        "top_n": 10
+      },
+      {
+        "factory": "dona",
+        "cell": "cell_3_2",
+        "id": "chart_participacion_sucursal",
+        "title": "Participacion por sucursal",
+        "x_column": "empresa",
+        "y_column": "total",
+        "aggregation": "sum",
+        "top_n": 10
+      },
+      {
+        "factory": "tabla",
+        "cell": "cell_4_1",
+        "id": "tabla_detalle_ventas",
+        "title": "Detalle de ventas",
+        "columns": [
+          "empresa",
+          "apertura",
+          "personas",
+          "totalarticulos",
+          "subtotal",
+          "total",
+          "totalimpuesto",
+          "pagado",
+          "cancelado"
+        ],
+        "sort_by": "apertura",
+        "sort_dir": "desc",
+        "limit": 200
+      }
+    ],
+    "date_range": {
+      "enabled": false,
+      "column": "apertura",
+      "start": "",
+      "end": ""
+    }
+  }
+}

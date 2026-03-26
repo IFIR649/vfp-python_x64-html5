@@ -39,7 +39,7 @@ FUNCTION DashboardBridgeInitForm
     ENDIF
 
     IF !PEMSTATUS(toForm, "cSourcePath", 5)
-        toForm.AddProperty("cSourcePath", "csv\ventas.csv")
+        toForm.AddProperty("cSourcePath", "csv\1773428117039-F2PLTd-VENTASPRODUCTOS.csv")
     ENDIF
 
     IF !PEMSTATUS(toForm, "cConfigPath", 5)
