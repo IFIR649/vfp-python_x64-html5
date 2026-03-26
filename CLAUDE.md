@@ -88,7 +88,7 @@ Helper column naming (via `_helper_column_name`):
 For large deployments (100+ machines), eliminate the first-load CSV parsing time by pre-generating the Parquet cache:
 
 1. **Generate**: On the build machine, open the CSV once via `POST /api/session/open`. This creates the Parquet cache at `{optimizer.source_cache_dir}/{sha1_signature}/source.parquet` along with `manifest.json`.
-2. **Locate**: Default cache directory is `%LOCALAPPDATA%\vfp_dashboard_cache\sources\`. Subdirectory name is a SHA1 hash of (source_path, file_size, mtime_ns, csv_options, cache_version).
+2. **Locate**: Default cache directory is `%TEMP%\vfp_dashboard_engine\`. Subdirectory name is a SHA1 hash of (source_path, file_size, mtime_ns, csv_options, cache_version). Configurable via `dashboard.runtime.optimizer.source_cache_dir` in config JSON.
 3. **Distribute**: Copy the entire `{sha1}/` folder to the same cache directory on each target machine. The source CSV must exist at the same path with the same size and modification time, or the cache will be invalidated.
 4. **Alternative — `parquet_source` mode**: If data is already in Parquet format, configure `csv_options.source_format: "parquet"` in the config JSON. The backend skips CSV parsing entirely.
 
